@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "LiteLLM Gateway - CloudFront CDN in front of ALB"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+
+Resources:
+  # --- CloudFront Distribution ---
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "${ProjectName} - LiteLLM API Gateway"
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_All
+        Origins:
+          - Id: ALBOrigin
+            DomainName: !ImportValue
+              Fn::Sub: "${ProjectName}-ALBDnsName"
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 30
+            OriginCustomHeaders:
+              - HeaderName: X-CloudFront-Verify
+                HeaderValue: !Select
+                  - 2
+                  - !Split
+                    - "/"
+                    - !Ref AWS::StackId
+        DefaultCacheBehavior:
+          TargetOriginId: ALBOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - PATCH
+            - POST
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+          # CachingDisabled managed policy
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          # AllViewer managed origin request policy - forwards all headers/query/cookies
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+          Compress: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-cloudfront"
+
+Outputs:
+  CloudFrontDomainName:
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Description: "CloudFront domain name (HTTPS endpoint)"
+    Export:
+      Name: !Sub "${ProjectName}-CloudFrontDomainName"
+  CloudFrontDistributionId:
+    Value: !Ref CloudFrontDistribution
+    Description: "CloudFront distribution ID (for cache invalidation)"
+    Export:
+      Name: !Sub "${ProjectName}-CloudFrontDistributionId"
+  CloudFrontVerifyHeader:
+    Value: !Select
+      - 2
+      - !Split
+        - "/"
+        - !Ref AWS::StackId
+    Description: "X-CloudFront-Verify header value (use to restrict ALB access)"
+    Export:
+      Name: !Sub "${ProjectName}-CloudFrontVerifyHeader"

@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "LiteLLM Gateway - RDS PostgreSQL + ElastiCache Redis Serverless + S3 Config"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+  TenantName:
+    Type: String
+    Default: default
+  DBInstanceClass:
+    Type: String
+    Default: db.m7g.large
+  DBName:
+    Type: String
+    Default: litellm
+
+Resources:
+  # --- Security Groups ---
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow PostgreSQL from ECS tasks"
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-VpcId"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-rds-sg"
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow Redis from ECS tasks"
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-VpcId"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-redis-sg"
+
+  # --- RDS PostgreSQL ---
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Private subnets for RDS"
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PrivateSubnet1Id"
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PrivateSubnet2Id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-db-subnet-group"
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-postgres"
+      Engine: postgres
+      EngineVersion: "16.13"
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: 50
+      MaxAllocatedStorage: 200
+      StorageType: gp3
+      DBName: !Ref DBName
+      MasterUsername: !Sub "{{resolve:secretsmanager:litellm/${TenantName}/db-password:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:litellm/${TenantName}/db-password:SecretString:password}}"
+      MultiAZ: true
+      PubliclyAccessible: false
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 7
+      StorageEncrypted: true
+      DeletionProtection: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-postgres"
+
+  # --- ElastiCache Redis Serverless ---
+  RedisServerless:
+    Type: AWS::ElastiCache::ServerlessCache
+    Properties:
+      Engine: redis
+      ServerlessCacheName: !Sub "${ProjectName}-redis"
+      Description: "LiteLLM Redis cache (serverless)"
+      SecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PrivateSubnet1Id"
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PrivateSubnet2Id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-redis"
+
+  # --- S3 Bucket for LiteLLM Config ---
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-config-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-config"
+
+Outputs:
+  RDSEndpoint:
+    Value: !GetAtt RDSInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${ProjectName}-RDSEndpoint"
+  RDSPort:
+    Value: !GetAtt RDSInstance.Endpoint.Port
+    Export:
+      Name: !Sub "${ProjectName}-RDSPort"
+  RedisEndpoint:
+    Value: !GetAtt RedisServerless.Endpoint.Address
+    Export:
+      Name: !Sub "${ProjectName}-RedisEndpoint"
+  RedisPort:
+    Value: !GetAtt RedisServerless.Endpoint.Port
+    Export:
+      Name: !Sub "${ProjectName}-RedisPort"
+  RDSSecurityGroupId:
+    Value: !Ref RDSSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-RDSSecurityGroupId"
+  RedisSecurityGroupId:
+    Value: !Ref RedisSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-RedisSecurityGroupId"
+  ConfigBucketName:
+    Value: !Ref ConfigBucket
+    Export:
+      Name: !Sub "${ProjectName}-ConfigBucketName"

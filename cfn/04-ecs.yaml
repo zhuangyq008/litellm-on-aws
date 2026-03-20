@@ -1,0 +1,343 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "LiteLLM Gateway - ECS Fargate + ALB + CloudWatch"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+  TenantName:
+    Type: String
+    Default: default
+  LiteLLMImage:
+    Type: String
+    Default: ghcr.io/berriai/litellm:main-latest
+  TaskCpu:
+    Type: String
+    Default: "1024"
+    AllowedValues: ["512", "1024", "2048", "4096"]
+  TaskMemory:
+    Type: String
+    Default: "4096"
+    AllowedValues: ["1024", "2048", "4096", "8192"]
+  DesiredCount:
+    Type: Number
+    Default: 2
+  DBName:
+    Type: String
+    Default: litellm
+
+Resources:
+  # --- CloudWatch Log Group ---
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}"
+      RetentionInDays: 30
+
+  # --- ALB Security Group ---
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow HTTP/HTTPS to ALB"
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb-sg"
+
+  # --- ECS Security Group ---
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow traffic from ALB to ECS tasks"
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 4000
+          ToPort: 4000
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ecs-sg"
+
+  # Allow ECS -> RDS
+  RDSIngressFromECS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !ImportValue
+        Fn::Sub: "${ProjectName}-RDSSecurityGroupId"
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref ECSSecurityGroup
+
+  # Allow ECS -> Redis
+  RedisIngressFromECS:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !ImportValue
+        Fn::Sub: "${ProjectName}-RedisSecurityGroupId"
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref ECSSecurityGroup
+
+  # --- ALB ---
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PublicSubnet1Id"
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PublicSubnet2Id"
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb"
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg"
+      Port: 4000
+      Protocol: HTTP
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-VpcId"
+      TargetType: ip
+      HealthCheckPath: /health/liveliness
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # --- IAM Roles ---
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: "${ProjectName}-DbPasswordSecretArn"
+                  - !ImportValue
+                    Fn::Sub: "${ProjectName}-MasterKeySecretArn"
+                  - !ImportValue
+                    Fn::Sub: "${ProjectName}-OpenAISecretArn"
+                  - !ImportValue
+                    Fn::Sub: "${ProjectName}-AnthropicSecretArn"
+                  - !ImportValue
+                    Fn::Sub: "${ProjectName}-GeminiSecretArn"
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: "*"
+        - PolicyName: S3ConfigAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub
+                  - "arn:aws:s3:::${Bucket}/*"
+                  - Bucket: !ImportValue
+                      Fn::Sub: "${ProjectName}-ConfigBucketName"
+
+  # --- ECS Cluster ---
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-cluster"
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  # --- ECS Task Definition ---
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-task"
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      ContainerDefinitions:
+        - Name: litellm
+          Image: !Ref LiteLLMImage
+          Essential: true
+          EntryPoint:
+            - "sh"
+            - "-c"
+          Command:
+            - !Sub
+              - |
+                python3 -c "
+                import boto3
+                s3 = boto3.client('s3')
+                s3.download_file('${ConfigBucket}', 'litellm-config.yaml', '/app/config.yaml')
+                print('Config downloaded from S3')
+                " && \
+                export DATABASE_URL="postgresql://${DBUser}:${!DATABASE_PASSWORD}@${DBHost}:${DBPort}/${DBName}" && \
+                exec litellm --config /app/config.yaml --port 4000 --num_workers 2
+              - ConfigBucket: !ImportValue
+                  Fn::Sub: "${ProjectName}-ConfigBucketName"
+                DBHost: !ImportValue
+                  Fn::Sub: "${ProjectName}-RDSEndpoint"
+                DBPort: !ImportValue
+                  Fn::Sub: "${ProjectName}-RDSPort"
+                DBUser: litellm
+                DBName: !Ref DBName
+          PortMappings:
+            - ContainerPort: 4000
+              Protocol: tcp
+          Environment:
+            - Name: REDIS_HOST
+              Value: !ImportValue
+                Fn::Sub: "${ProjectName}-RedisEndpoint"
+            - Name: REDIS_PORT
+              Value: !ImportValue
+                Fn::Sub: "${ProjectName}-RedisPort"
+            - Name: REDIS_SSL
+              Value: "true"
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+          Secrets:
+            - Name: DATABASE_PASSWORD
+              ValueFrom: !Sub
+                - "${SecretArn}:password::"
+                - SecretArn: !ImportValue
+                    Fn::Sub: "${ProjectName}-DbPasswordSecretArn"
+            - Name: LITELLM_MASTER_KEY
+              ValueFrom: !Sub
+                - "${SecretArn}:master_key::"
+                - SecretArn: !ImportValue
+                    Fn::Sub: "${ProjectName}-MasterKeySecretArn"
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub
+                - "${SecretArn}:api_key::"
+                - SecretArn: !ImportValue
+                    Fn::Sub: "${ProjectName}-OpenAISecretArn"
+            - Name: ANTHROPIC_API_KEY
+              ValueFrom: !Sub
+                - "${SecretArn}:api_key::"
+                - SecretArn: !ImportValue
+                    Fn::Sub: "${ProjectName}-AnthropicSecretArn"
+            - Name: GEMINI_API_KEY
+              ValueFrom: !Sub
+                - "${SecretArn}:api_key::"
+                - SecretArn: !ImportValue
+                    Fn::Sub: "${ProjectName}-GeminiSecretArn"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: litellm
+
+  # --- ECS Service ---
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub "${ProjectName}-service"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !ImportValue
+              Fn::Sub: "${ProjectName}-PrivateSubnet1Id"
+            - !ImportValue
+              Fn::Sub: "${ProjectName}-PrivateSubnet2Id"
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+      LoadBalancers:
+        - ContainerName: litellm
+          ContainerPort: 4000
+          TargetGroupArn: !Ref TargetGroup
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      HealthCheckGracePeriodSeconds: 120
+
+Outputs:
+  ALBDnsName:
+    Value: !GetAtt ALB.DNSName
+    Description: "LiteLLM Gateway URL"
+    Export:
+      Name: !Sub "${ProjectName}-ALBDnsName"
+  ECSClusterName:
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub "${ProjectName}-ECSClusterName"
+  ECSServiceName:
+    Value: !GetAtt ECSService.Name
+    Export:
+      Name: !Sub "${ProjectName}-ECSServiceName"
