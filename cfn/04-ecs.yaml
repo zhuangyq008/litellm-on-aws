@@ -10,7 +10,7 @@ Parameters:
     Default: default
   LiteLLMImage:
     Type: String
-    Default: ghcr.io/berriai/litellm:main-latest
+    Default: ghcr.io/berriai/litellm:main-v1.82.3-stable.patch.2
   TaskCpu:
     Type: String
     Default: "1024"

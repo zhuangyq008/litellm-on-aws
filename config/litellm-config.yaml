@@ -32,6 +32,11 @@ model_list:
       model: bedrock/us.anthropic.claude-opus-4-6-v1
       aws_region_name: us-east-1
 
+  - model_name: bedrock-claude-sonnet
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-6
+      aws_region_name: us-east-1
+
   - model_name: bedrock-claude-haiku
     litellm_params:
       model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
