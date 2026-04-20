@@ -10,7 +10,7 @@ class TestBuildQuery:
         }
         sql = build_query(params, "mydb", "audit_logs")
         assert "SELECT" in sql
-        assert "FROM mydb.audit_logs" in sql
+        assert "FROM \"mydb\".audit_logs" in sql
         assert "year = '2026'" in sql
         assert "month = '04'" in sql
         assert "start_time >= '2026-04-01'" in sql
@@ -106,6 +106,6 @@ class TestBuildRecordQuery:
         from query_builder import build_record_query
         sql = build_record_query("abc-123", "mydb", "audit_logs")
         assert "SELECT *" in sql
-        assert "FROM mydb.audit_logs" in sql
+        assert "FROM \"mydb\".audit_logs" in sql
         assert "id = 'abc-123'" in sql
         assert "LIMIT 1" in sql

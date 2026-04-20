@@ -91,7 +91,7 @@ def build_query(params: dict, database: str, table: str) -> str:
 
     return (
         f"SELECT {LIST_COLUMNS} "
-        f"FROM {database}.{table} "
+        f"FROM \"{database}\".{table} "
         f"WHERE {where_clause} "
         f"ORDER BY start_time DESC "
         f"LIMIT {page_size}"
@@ -102,7 +102,7 @@ def build_record_query(record_id: str, database: str, table: str) -> str:
     safe_id = _sanitize(record_id)
     return (
         f"SELECT * "
-        f"FROM {database}.{table} "
+        f"FROM \"{database}\".{table} "
         f"WHERE id = '{safe_id}' "
         f"LIMIT 1"
     )
