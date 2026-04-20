@@ -1,6 +1,9 @@
 import re
 import ast
 import json
+from typing import Any
+
+PREVIEW_MAX_LENGTH = 500
 
 
 def _extract_int(text: str, pattern: str, default: int = 0) -> int:
@@ -46,8 +49,8 @@ def parse_response(response_str: str) -> dict:
         if not content_match:
             content_match = re.search(r"content='(.*?)'", response_str, re.DOTALL)
         preview = content_match.group(1) if content_match else ""
-        if len(preview) > 500:
-            preview = preview[:500]
+        if len(preview) > PREVIEW_MAX_LENGTH:
+            preview = preview[:PREVIEW_MAX_LENGTH]
 
         tool_names_in_functions = re.findall(r"Function\(arguments=.*?, name='(\w+)'\)", response_str, re.DOTALL)
         if tool_names_in_functions:
@@ -55,7 +58,7 @@ def parse_response(response_str: str) -> dict:
         else:
             tool_names = []
 
-        has_tool_calls = len(tool_names) > 0
+        has_tool_calls = bool(tool_names)
 
         return {
             "finish_reason": finish_reason,
@@ -67,7 +70,7 @@ def parse_response(response_str: str) -> dict:
         return defaults
 
 
-def _extract_user_text(content) -> str:
+def _extract_user_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -95,8 +98,8 @@ def parse_messages(messages_str: str) -> dict:
                 if text:
                     last_user_text = text
 
-        if len(last_user_text) > 500:
-            last_user_text = last_user_text[:500]
+        if len(last_user_text) > PREVIEW_MAX_LENGTH:
+            last_user_text = last_user_text[:PREVIEW_MAX_LENGTH]
 
         return {
             "message_count": len(messages),
