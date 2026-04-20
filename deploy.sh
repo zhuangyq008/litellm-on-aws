@@ -107,6 +107,62 @@ fi
 deploy_stack "${PROJECT_NAME}-cloudfront" "${CFN_DIR}/05-cloudfront.yaml" \
   "ParameterKey=ProjectName,ParameterValue=${PROJECT_NAME}"
 
+# ========== Step 7: Package and upload Lambda functions ==========
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+log "Step 7: Packaging Lambda functions..."
+
+cd "${SCRIPT_DIR}/lambda/stream-processor"
+zip -r /tmp/stream-processor.zip handler.py parser.py
+aws s3 cp /tmp/stream-processor.zip "s3://${CONFIG_BUCKET}/lambda/stream-processor.zip" --region "$REGION"
+cd "$SCRIPT_DIR"
+
+cd "${SCRIPT_DIR}/lambda/query-api"
+zip -r /tmp/query-api.zip handler.py query_builder.py
+aws s3 cp /tmp/query-api.zip "s3://${CONFIG_BUCKET}/lambda/query-api.zip" --region "$REGION"
+cd "$SCRIPT_DIR"
+
+log "Lambda packages uploaded to S3"
+
+# ========== Step 8: Deploy Audit Pipeline stack ==========
+deploy_stack "${PROJECT_NAME}-audit-pipeline" "${CFN_DIR}/06-audit-pipeline.yaml" \
+  "ParameterKey=ProjectName,ParameterValue=${PROJECT_NAME}"
+
+# ========== Step 9: Deploy Audit UI stack ==========
+deploy_stack "${PROJECT_NAME}-audit-ui" "${CFN_DIR}/07-audit-ui.yaml" \
+  "ParameterKey=ProjectName,ParameterValue=${PROJECT_NAME}"
+
+# ========== Step 10: Build and deploy SPA ==========
+log "Step 10: Building and deploying Audit UI SPA..."
+
+AUDIT_API_ENDPOINT=$(aws cloudformation describe-stacks --stack-name "${PROJECT_NAME}-audit-ui" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`ApiEndpoint`].OutputValue' --output text)
+COGNITO_POOL_ID=$(aws cloudformation describe-stacks --stack-name "${PROJECT_NAME}-audit-ui" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`CognitoUserPoolId`].OutputValue' --output text)
+COGNITO_CLIENT_ID=$(aws cloudformation describe-stacks --stack-name "${PROJECT_NAME}-audit-ui" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`CognitoClientId`].OutputValue' --output text)
+COGNITO_DOMAIN=$(aws cloudformation describe-stacks --stack-name "${PROJECT_NAME}-audit-ui" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`CognitoDomain`].OutputValue' --output text)
+SPA_BUCKET=$(aws cloudformation describe-stacks --stack-name "${PROJECT_NAME}-audit-ui" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`SpaBucketName`].OutputValue' --output text)
+SPA_CF_ID=$(aws cloudformation describe-stacks --stack-name "${PROJECT_NAME}-audit-ui" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`SpaCloudFrontDistributionId`].OutputValue' --output text)
+
+cd "${SCRIPT_DIR}/audit-ui"
+VITE_API_ENDPOINT="$AUDIT_API_ENDPOINT" \
+VITE_COGNITO_USER_POOL_ID="$COGNITO_POOL_ID" \
+VITE_COGNITO_CLIENT_ID="$COGNITO_CLIENT_ID" \
+VITE_COGNITO_DOMAIN="$COGNITO_DOMAIN" \
+npm run build
+
+aws s3 sync dist/ "s3://${SPA_BUCKET}/" --delete --region "$REGION"
+aws cloudfront create-invalidation --distribution-id "$SPA_CF_ID" --paths "/*" --region "$REGION"
+cd "$SCRIPT_DIR"
+
+SPA_DOMAIN=$(aws cloudformation describe-stacks --stack-name "${PROJECT_NAME}-audit-ui" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`SpaCloudFrontDomain`].OutputValue' --output text)
+
 # ========== Output ==========
 ALB_DNS=$(aws cloudformation describe-stacks \
   --stack-name "${PROJECT_NAME}-ecs" \
@@ -132,6 +188,8 @@ log " Deployment Complete!"
 log " LiteLLM Gateway (ALB):        http://${ALB_DNS}"
 log " LiteLLM Gateway (CloudFront): https://${CF_DOMAIN}"
 log " CloudFront Distribution ID:   ${CF_DIST_ID}"
+log " Audit UI:                     https://${SPA_DOMAIN}"
+log " Audit API:                    ${AUDIT_API_ENDPOINT}"
 log "========================================="
 echo ""
 log "NEXT STEPS:"
@@ -142,4 +200,7 @@ log "     aws secretsmanager update-secret --secret-id litellm/${TENANT_NAME}/ge
 log "  2. Force new ECS deployment to pick up secrets:"
 log "     aws ecs update-service --cluster ${PROJECT_NAME}-cluster --service ${PROJECT_NAME}-service --force-new-deployment --region ${REGION}"
 log "  3. Verify health (via CloudFront): curl https://${CF_DOMAIN}/health/liveliness"
-log "  4. (Optional) Add custom domain: configure CNAME + ACM certificate in CloudFront"
+log "  4. Create Cognito admin user:"
+log "     aws cognito-idp admin-create-user --user-pool-id ${COGNITO_POOL_ID} --username admin@example.com --temporary-password 'TempPass123!' --user-attributes Name=email,Value=admin@example.com Name=email_verified,Value=true --region ${REGION}"
+log "  5. Update Cognito callback URL:"
+log "     aws cognito-idp update-user-pool-client --user-pool-id ${COGNITO_POOL_ID} --client-id ${COGNITO_CLIENT_ID} --callback-urls https://${SPA_DOMAIN} --logout-urls https://${SPA_DOMAIN} --allowed-o-auth-flows code --allowed-o-auth-scopes openid email profile --allowed-o-auth-flows-user-pool-client --supported-identity-providers COGNITO --region ${REGION}"
