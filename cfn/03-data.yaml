@@ -131,6 +131,8 @@ Resources:
           KeyType: HASH
         - AttributeName: startTime
           KeyType: RANGE
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
@@ -177,3 +179,7 @@ Outputs:
     Value: !GetAtt AuditLogTable.Arn
     Export:
       Name: !Sub "${ProjectName}-AuditLogTableArn"
+  AuditLogTableStreamArn:
+    Value: !GetAtt AuditLogTable.StreamArn
+    Export:
+      Name: !Sub "${ProjectName}-AuditLogTableStreamArn"
