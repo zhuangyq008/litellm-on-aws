@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Audit Log Pipeline - S3, Lambda (DynamoDB Streams), Glue, Athena"
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+
+Resources:
+  # --- S3 Audit Bucket ---
+  AuditBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-audit-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteLogsAfter90Days
+            Status: Enabled
+            Prefix: logs/
+            ExpirationInDays: 90
+          - Id: DeleteErrorsAfter180Days
+            Status: Enabled
+            Prefix: errors/
+            ExpirationInDays: 180
+          - Id: DeleteAthenaResultsAfter7Days
+            Status: Enabled
+            Prefix: athena-results/
+            ExpirationInDays: 7
+
+  # --- Stream Processor Lambda Role ---
+  StreamProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-stream-processor-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBStreamRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:DescribeStream
+                  - dynamodb:ListStreams
+                Resource:
+                  Fn::ImportValue: !Sub "${ProjectName}-AuditLogTableStreamArn"
+        - PolicyName: S3Write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${AuditBucket}/*"
+
+  # --- Stream Processor Lambda ---
+  StreamProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-stream-processor"
+      Runtime: python3.12
+      Handler: handler.handler
+      MemorySize: 256
+      Timeout: 60
+      Role: !GetAtt StreamProcessorRole.Arn
+      Code:
+        S3Bucket:
+          Fn::ImportValue: !Sub "${ProjectName}-ConfigBucketName"
+        S3Key: lambda/stream-processor.zip
+      Environment:
+        Variables:
+          AUDIT_BUCKET: !Ref AuditBucket
+
+  # --- DynamoDB Stream Event Source Mapping ---
+  StreamEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn:
+        Fn::ImportValue: !Sub "${ProjectName}-AuditLogTableStreamArn"
+      FunctionName: !Ref StreamProcessorFunction
+      StartingPosition: TRIM_HORIZON
+      BatchSize: 100
+      MaximumBatchingWindowInSeconds: 60
+      Enabled: true
+
+  # --- Glue Database ---
+  AuditGlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub "${ProjectName}_audit"
+        Description: "Audit log data for Athena queries"
+
+  # --- Glue Table ---
+  AuditGlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref AuditGlueDatabase
+      TableInput:
+        Name: audit_logs
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: json
+          "projection.enabled": "true"
+          "projection.year.type": integer
+          "projection.year.range": "2026,2030"
+          "projection.month.type": integer
+          "projection.month.range": "1,12"
+          "projection.month.digits": "2"
+          "projection.day.type": integer
+          "projection.day.range": "1,31"
+          "projection.day.digits": "2"
+          "storage.location.template": !Sub "s3://${AuditBucket}/logs/year=${!year}/month=${!month}/day=${!day}"
+        StorageDescriptor:
+          Location: !Sub "s3://${AuditBucket}/logs/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+            Parameters:
+              "serialization.format": "1"
+          Columns:
+            - Name: id
+              Type: string
+            - Name: call_type
+              Type: string
+            - Name: model
+              Type: string
+            - Name: start_time
+              Type: string
+            - Name: end_time
+              Type: string
+            - Name: completion_tokens
+              Type: bigint
+            - Name: prompt_tokens
+              Type: bigint
+            - Name: total_tokens
+              Type: bigint
+            - Name: cached_tokens
+              Type: bigint
+            - Name: reasoning_tokens
+              Type: bigint
+            - Name: finish_reason
+              Type: string
+            - Name: response_preview
+              Type: string
+            - Name: has_tool_calls
+              Type: boolean
+            - Name: tool_names
+              Type: "array<string>"
+            - Name: message_count
+              Type: int
+            - Name: user_message_preview
+              Type: string
+            - Name: device_id
+              Type: string
+            - Name: session_id
+              Type: string
+            - Name: source_ip
+              Type: string
+            - Name: raw_messages
+              Type: string
+            - Name: raw_response
+              Type: string
+            - Name: raw_metadata
+              Type: string
+            - Name: raw_model_parameters
+              Type: string
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+
+  # --- Athena Workgroup ---
+  AuditAthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub "${ProjectName}-audit"
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${AuditBucket}/athena-results/"
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+
+Outputs:
+  AuditBucketName:
+    Value: !Ref AuditBucket
+    Export:
+      Name: !Sub "${ProjectName}-AuditBucketName"
+  AuditBucketArn:
+    Value: !GetAtt AuditBucket.Arn
+    Export:
+      Name: !Sub "${ProjectName}-AuditBucketArn"
+  GlueDatabaseName:
+    Value: !Ref AuditGlueDatabase
+    Export:
+      Name: !Sub "${ProjectName}-AuditGlueDatabaseName"
+  AthenaWorkgroupName:
+    Value: !Ref AuditAthenaWorkgroup
+    Export:
+      Name: !Sub "${ProjectName}-AuditAthenaWorkgroupName"
