@@ -4,7 +4,7 @@ import time
 import uuid
 import logging
 import boto3
-from datetime import datetime
+from datetime import datetime, timezone
 
 from parser import transform_record
 
@@ -20,7 +20,7 @@ def _s3_key(prefix: str, start_time_str: str) -> str:
     try:
         dt = datetime.strptime(start_time_str[:10], "%Y-%m-%d")
     except (ValueError, TypeError):
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc)
     ts = int(time.time() * 1000)
     batch_id = uuid.uuid4().hex[:8]
     return f"{prefix}/year={dt.year}/month={dt.month:02d}/day={dt.day:02d}/{ts}-{batch_id}.json"
