@@ -101,7 +101,7 @@ export default function useAuth() {
       if (!currentUser) return resolve(null);
       currentUser.getSession((err, session) => {
         if (err || !session.isValid()) return resolve(null);
-        resolve(session.getAccessToken().getJwtToken());
+        resolve(session.getIdToken().getJwtToken());
       });
     });
   }, []);
