@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  LiteLLM Gateway - Ops 独立模块 (2/2): Regional WAF WebACL 关联 ALB。
+  管理路径 IP 白名单（限制 master key 管理操作）+ rate-based 异常流量拦截 +
+  AWS 托管规则 + 可选 Geo 白名单 + WAF 日志 + BlockedRequests 告警。
+  通过独立的 WebACLAssociation 挂载，卸载本栈不影响 ALB 本体。
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+  EnableAdminLockdown:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: 是否启用管理路径 IP 白名单（限制 master key 管理操作）；false 时不创建 IPSet 与锁定规则
+  AllowedAdminCidrs:
+    Type: CommaDelimitedList
+    Default: "0.0.0.0/32"
+    Description: 管理操作允许的源 IPv4 CIDR 列表（EnableAdminLockdown=true 时生效，如 203.0.113.10/32,198.51.100.0/24）
+  RateLimit:
+    Type: Number
+    Default: 2000
+    MinValue: 100
+    Description: 单 IP 5 分钟内请求上限，超出自动 BLOCK（按客户正常峰值设定）
+  EnableGeoBlock:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: 是否启用区域白名单（仅放行 AllowedCountries）
+  AllowedCountries:
+    Type: CommaDelimitedList
+    Default: "CN"
+    Description: 区域白名单 ISO 国家码（EnableGeoBlock=true 时生效）
+  AlertTopicArn:
+    Type: String
+    Default: ""
+    Description: monitoring 栈输出的 SNS 主题 ARN；填了才创建 WAF BlockedRequests 告警
+  WafBlockedThreshold:
+    Type: Number
+    Default: 200
+    Description: 5min 内 WAF 拦截数阈值（激增=攻击/滥用）
+
+Conditions:
+  HasGeo: !Equals [!Ref EnableGeoBlock, "true"]
+  HasAdminLockdown: !Equals [!Ref EnableAdminLockdown, "true"]
+  HasAlertTopic: !Not [!Equals [!Ref AlertTopicArn, ""]]
+
+Resources:
+  # --- 管理操作 IP 白名单（仅 EnableAdminLockdown=true 时创建）---
+  AdminAllowIpSet:
+    Type: AWS::WAFv2::IPSet
+    Condition: HasAdminLockdown
+    Properties:
+      Name: !Sub "${ProjectName}-ops-admin-allowlist"
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses: !Ref AllowedAdminCidrs
+
+  # --- WAF 日志目标（名字必须以 aws-waf-logs- 开头）---
+  WafLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "aws-waf-logs-${ProjectName}-ops"
+      RetentionInDays: 90
+
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${ProjectName}-ops-acl"
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${ProjectName}OpsAcl"
+      Rules:
+        # 区域白名单（可选，最高优先级）
+        - !If
+          - HasGeo
+          - Name: GeoAllowlist
+            Priority: 5
+            Action:
+              Block: {}
+            Statement:
+              NotStatement:
+                Statement:
+                  GeoMatchStatement:
+                    CountryCodes: !Ref AllowedCountries
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: !Sub "${ProjectName}GeoAllowlist"
+          - !Ref "AWS::NoValue"
+
+        # AWS 托管规则组
+        - Name: AWSCommon
+          Priority: 10
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              # LLM 网关请求体远大于 8KB（system prompt + 工具定义 + 上下文），
+              # 将 body 大小限制子规则改为 Count（仅计数不拦截），保留组内其余攻击防护。
+              RuleActionOverrides:
+                - Name: SizeRestrictions_BODY
+                  ActionToUse:
+                    Count: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${ProjectName}Common"
+
+        - Name: AWSKnownBadInputs
+          Priority: 11
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${ProjectName}KnownBad"
+
+        - Name: AWSIpReputation
+          Priority: 12
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${ProjectName}IpRep"
+
+        # 管理路径锁定：命中管理路径 且 源 IP 不在白名单 -> BLOCK
+        # （限制 master key 的管理操作只能从白名单 IP 发起）
+        - !If
+          - HasAdminLockdown
+          - Name: AdminPathLockdown
+            Priority: 20
+            Action:
+              Block: {}
+            Statement:
+              AndStatement:
+                Statements:
+                  - OrStatement:
+                      Statements:
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/key"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/user"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/team"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/organization"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/model/new"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/model/update"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/model/delete"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/config"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/ui"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/spend"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                        - ByteMatchStatement:
+                            FieldToMatch: { UriPath: {} }
+                            PositionalConstraint: STARTS_WITH
+                            SearchString: "/global"
+                            TextTransformations: [{ Priority: 0, Type: LOWERCASE }]
+                  - NotStatement:
+                      Statement:
+                        IPSetReferenceStatement:
+                          Arn: !GetAtt AdminAllowIpSet.Arn
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: !Sub "${ProjectName}AdminLockdown"
+          - !Ref "AWS::NoValue"
+
+        # 异常流量：单 IP 限速自动拦截
+        - Name: RateLimitPerIp
+          Priority: 30
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimit
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${ProjectName}RateLimit"
+
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }
+      WebACLArn: !GetAtt WebACL.Arn
+
+  WafLoggingConfiguration:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Properties:
+      ResourceArn: !GetAtt WebACL.Arn
+      LogDestinationConfigs:
+        - !GetAtt WafLogGroup.Arn
+      # 脱敏鉴权头，避免客户 API key 落入 WAF 日志
+      RedactedFields:
+        - SingleHeader:
+            Name: authorization
+        - SingleHeader:
+            Name: x-api-key
+
+  # --- WAF 拦截激增告警（复用 monitoring 栈的 SNS 主题）---
+  WafBlockedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlertTopic
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-waf-blocked-spike"
+      AlarmDescription: "WAF 拦截量激增，疑似攻击/滥用"
+      Namespace: AWS/WAFV2
+      MetricName: BlockedRequests
+      Dimensions:
+        - Name: WebACL
+          Value: !Sub "${ProjectName}-ops-acl"
+        - Name: Rule
+          Value: ALL
+        - Name: Region
+          Value: !Ref AWS::Region
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref WafBlockedThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+Outputs:
+  WebACLArn:
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub "${ProjectName}-ops-WebACLArn"
+  AdminAllowIpSetId:
+    Condition: HasAdminLockdown
+    Value: !GetAtt AdminAllowIpSet.Id
+    Description: "管理白名单 IPSet ID（维护白名单用）"

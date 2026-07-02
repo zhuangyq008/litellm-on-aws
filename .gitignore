@@ -2,3 +2,4 @@
 .superpowers/
 audit-ui/node_modules/
 audit-ui/dist/
+ops/params.env

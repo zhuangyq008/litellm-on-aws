@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# LiteLLM Gateway - Ops 独立部署脚本
+# 与主 deploy.sh 完全解耦：仅只读引用主栈导出，可独立部署/卸载。
+# 用法：
+#   cp ops/params.example.env ops/params.env   # 填入 webhook / 白名单 / 阈值
+#   bash ops/deploy-ops.sh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_NAME="${PROJECT_NAME:-litellm-gw}"
+REGION="${AWS_REGION:-us-east-1}"
+
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+# ---------- 载入参数 ----------
+PARAMS_FILE="${SCRIPT_DIR}/params.env"
+if [ ! -f "$PARAMS_FILE" ]; then
+  echo "ERROR: 未找到 ${PARAMS_FILE}，请先 cp params.example.env params.env 并填写。" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$PARAMS_FILE"
+
+: "${IM_TYPE:?IM_TYPE 未设置}"
+: "${WEBHOOK_URL:?WEBHOOK_URL 未设置}"
+WEBHOOK_SIGN_SECRET="${WEBHOOK_SIGN_SECRET:-}"
+ENABLE_ADMIN_LOCKDOWN="${ENABLE_ADMIN_LOCKDOWN:-false}"
+ALLOWED_ADMIN_CIDRS="${ALLOWED_ADMIN_CIDRS:-0.0.0.0/32}"
+if [ "$ENABLE_ADMIN_LOCKDOWN" = "true" ] && [ "$ALLOWED_ADMIN_CIDRS" = "0.0.0.0/32" ]; then
+  echo "ERROR: ENABLE_ADMIN_LOCKDOWN=true 时必须设置真实的 ALLOWED_ADMIN_CIDRS（运维出口 IP）。" >&2
+  exit 1
+fi
+RATE_LIMIT="${RATE_LIMIT:-2000}"
+ENABLE_GEO_BLOCK="${ENABLE_GEO_BLOCK:-false}"
+ALLOWED_COUNTRIES="${ALLOWED_COUNTRIES:-CN}"
+TARGET_GROUP_FULL_NAME="${TARGET_GROUP_FULL_NAME:-}"
+
+command -v jq >/dev/null 2>&1 || { echo "ERROR: 需要 jq 来安全构造密钥 JSON。" >&2; exit 1; }
+
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+ARTIFACT_BUCKET="${PROJECT_NAME}-ops-artifacts-${ACCOUNT_ID}"
+
+MON_STACK="${PROJECT_NAME}-ops-monitoring"
+WAF_STACK="${PROJECT_NAME}-ops-waf"
+
+# ---------- 前置检查：主栈导出 ----------
+if ! aws cloudformation list-exports --region "$REGION" \
+      --query "Exports[?Name=='${PROJECT_NAME}-ALBArn'].Value" --output text | grep -q .; then
+  echo "ERROR: 未找到主栈导出 ${PROJECT_NAME}-ALBArn，请先部署主栈 (${PROJECT_NAME}-ecs)。" >&2
+  exit 1
+fi
+
+# ---------- 工件桶 ----------
+if ! aws s3api head-bucket --bucket "$ARTIFACT_BUCKET" 2>/dev/null; then
+  log "创建工件桶 ${ARTIFACT_BUCKET}"
+  if [ "$REGION" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket "$ARTIFACT_BUCKET" --region "$REGION"
+  else
+    aws s3api create-bucket --bucket "$ARTIFACT_BUCKET" --region "$REGION" \
+      --create-bucket-configuration "LocationConstraint=${REGION}"
+  fi
+  aws s3api put-public-access-block --bucket "$ARTIFACT_BUCKET" \
+    --public-access-block-configuration \
+    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+  aws s3api put-bucket-encryption --bucket "$ARTIFACT_BUCKET" \
+    --server-side-encryption-configuration \
+    '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+fi
+
+# ========== Step 1: monitoring 栈（含 Lambda 打包）==========
+log "打包 monitoring 模板 (上传 alert-notifier Lambda 到 ${ARTIFACT_BUCKET})"
+aws cloudformation package \
+  --template-file "${SCRIPT_DIR}/cfn/01-monitoring.yaml" \
+  --s3-bucket "$ARTIFACT_BUCKET" \
+  --s3-prefix ops-lambda \
+  --output-template-file /tmp/ops-monitoring.packaged.yaml \
+  --region "$REGION"
+
+log "部署 ${MON_STACK}"
+aws cloudformation deploy \
+  --template-file /tmp/ops-monitoring.packaged.yaml \
+  --stack-name "$MON_STACK" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region "$REGION" \
+  --parameter-overrides \
+    "ProjectName=${PROJECT_NAME}" \
+    "ImType=${IM_TYPE}" \
+    "TargetGroupFullName=${TARGET_GROUP_FULL_NAME}"
+
+SNS_ARN="$(aws cloudformation describe-stacks --stack-name "$MON_STACK" --region "$REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='AlertTopicArn'].OutputValue" --output text)"
+log "SNS 告警主题: ${SNS_ARN}"
+
+# 写入 IM webhook 密钥（用 put-secret-value：CloudTrail 对密钥体脱敏，jq 保证 JSON 转义正确）
+SECRET_ARN="$(aws cloudformation describe-stacks --stack-name "$MON_STACK" --region "$REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='WebhookSecretArn'].OutputValue" --output text)"
+log "写入 IM webhook 密钥到 ${SECRET_ARN}"
+SECRET_JSON="$(jq -nc --arg u "$WEBHOOK_URL" --arg s "$WEBHOOK_SIGN_SECRET" \
+  '{webhook_url:$u, sign_secret:$s}')"
+aws secretsmanager put-secret-value --secret-id "$SECRET_ARN" \
+  --secret-string "$SECRET_JSON" --region "$REGION" >/dev/null
+
+# ========== Step 2: WAF 栈 ==========
+log "部署 ${WAF_STACK}"
+aws cloudformation deploy \
+  --template-file "${SCRIPT_DIR}/cfn/02-waf.yaml" \
+  --stack-name "$WAF_STACK" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region "$REGION" \
+  --parameter-overrides \
+    "ProjectName=${PROJECT_NAME}" \
+    "EnableAdminLockdown=${ENABLE_ADMIN_LOCKDOWN}" \
+    "AllowedAdminCidrs=${ALLOWED_ADMIN_CIDRS}" \
+    "RateLimit=${RATE_LIMIT}" \
+    "EnableGeoBlock=${ENABLE_GEO_BLOCK}" \
+    "AllowedCountries=${ALLOWED_COUNTRIES}" \
+    "AlertTopicArn=${SNS_ARN}"
+
+# ========== 输出 ==========
+DASH_URL="https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${PROJECT_NAME}-ops"
+echo ""
+log "========================================="
+log " Ops 模块部署完成"
+log " 告警主题:   ${SNS_ARN}"
+log " Dashboard:  ${DASH_URL}"
+log " WAF WebACL: ${PROJECT_NAME}-ops-acl (已关联 ALB)"
+log "========================================="
+log "卸载：aws cloudformation delete-stack --stack-name ${WAF_STACK} --region ${REGION}"
+log "      aws cloudformation delete-stack --stack-name ${MON_STACK} --region ${REGION}"

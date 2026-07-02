@@ -1,0 +1,355 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  LiteLLM Gateway - Ops 独立模块 (1/2): CloudWatch 告警 + SNS + IM 通知适配器 + Dashboard。
+  仅只读引用主栈导出 (ALBArn / ECSClusterName / ECSServiceName)，不修改任何主栈资源。
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+    Description: 与主栈一致的项目名，用于 ImportValue 引用主栈导出
+
+  # --- IM 通知 ---
+  ImType:
+    Type: String
+    Default: feishu
+    AllowedValues: [feishu, dingtalk, wecom]
+    Description: 群机器人类型
+
+  # --- 告警阈值（先给默认值，上线后按实际调）---
+  DesiredTaskCount:
+    Type: Number
+    Default: 2
+    Description: 期望运行的 ECS 任务数（低于此值告警）
+  Http5xxThreshold:
+    Type: Number
+    Default: 10
+    Description: 5min 内 Target 5XX 数量阈值
+  Http4xxThreshold:
+    Type: Number
+    Default: 100
+    Description: 5min 内 ELB 4XX 数量阈值（大量鉴权失败=撞库/滥用信号）
+  TargetResponseTimeThreshold:
+    Type: Number
+    Default: 30
+    Description: p95 目标响应时间阈值（秒）
+  EcsCpuThreshold:
+    Type: Number
+    Default: 85
+    Description: ECS 服务 CPU 利用率阈值（%）
+  EcsMemThreshold:
+    Type: Number
+    Default: 85
+    Description: ECS 服务内存利用率阈值（%）
+  RequestCountAnomalyStdev:
+    Type: Number
+    Default: 2
+    Description: 请求量异常检测带宽标准差（越大越不敏感）
+  TargetGroupFullName:
+    Type: String
+    Default: ""
+    Description: 可选，目标组全名(targetgroup/xxx/yyy)，填了才创建 UnHealthyHost 告警
+
+Conditions:
+  HasTargetGroup: !Not [!Equals [!Ref TargetGroupFullName, ""]]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # 通知通道：Secret + Lambda 适配器 + SNS
+  # ---------------------------------------------------------------------------
+  # 密钥值不由模板管理，避免 webhook URL/密钥经 CFN 参数进入 CloudTrail，
+  # 也避免 Fn::Sub 拼 JSON 的转义问题。部署脚本用 put-secret-value 写入首个版本；
+  # 后续栈更新不涉及 SecretString，故不会覆盖已写入的值。
+  WebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}-ops-im-webhook"
+      Description: "IM 群机器人 webhook URL 与加签密钥（值由 deploy-ops.sh 写入）"
+
+  NotifierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ops-notifier-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReadWebhookSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref WebhookSecret
+
+  NotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-ops-alert-notifier"
+      Runtime: python3.12
+      Handler: handler.handler
+      Timeout: 15
+      MemorySize: 128
+      Role: !GetAtt NotifierRole.Arn
+      # `aws cloudformation package` 会把该本地路径替换为 S3 位置
+      Code: ../lambda/alert-notifier
+      Environment:
+        Variables:
+          IM_TYPE: !Ref ImType
+          WEBHOOK_SECRET_ARN: !Ref WebhookSecret
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-ops-alerts"
+      DisplayName: "LiteLLM GW Ops Alerts"
+      KmsMasterKeyId: "alias/aws/sns"
+
+  NotifierSnsPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NotifierFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref AlertTopic
+
+  NotifierSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: lambda
+      Endpoint: !GetAtt NotifierFunction.Arn
+
+  # ---------------------------------------------------------------------------
+  # 告警 —— 异常流量
+  # ---------------------------------------------------------------------------
+  # 请求量突增：CloudWatch 异常检测带宽，偏离基线即告警
+  RequestCountAnomalyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-request-count-anomaly"
+      AlarmDescription: "ALB 请求量偏离历史基线（异常流量突增/骤降）"
+      ComparisonOperator: GreaterThanUpperThreshold
+      EvaluationPeriods: 2
+      ThresholdMetricId: ad1
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApplicationELB
+              MetricName: RequestCount
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
+            Period: 300
+            Stat: Sum
+          ReturnData: true
+        - Id: ad1
+          Expression: !Sub "ANOMALY_DETECTION_BAND(m1, ${RequestCountAnomalyStdev})"
+          Label: "RequestCount (expected band)"
+          ReturnData: true
+
+  # 大量 4XX（撞库/凭证滥用信号）
+  Http4xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-elb-4xx-spike"
+      AlarmDescription: "ALB 4XX 激增，可能为凭证撞库/滥用"
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_ELB_4XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref Http4xxThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  # ---------------------------------------------------------------------------
+  # 告警 —— 服务健康
+  # ---------------------------------------------------------------------------
+  Http5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-target-5xx"
+      AlarmDescription: "后端 5XX 超阈值（LiteLLM/上游报错）"
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref Http5xxThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  LatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-latency-p95"
+      AlarmDescription: "p95 响应时间过高"
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
+      ExtendedStatistic: p95
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref TargetResponseTimeThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  UnHealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasTargetGroup
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-unhealthy-hosts"
+      AlarmDescription: "存在不健康的后端目标"
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
+        - Name: TargetGroup
+          Value: !Ref TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  # ---------------------------------------------------------------------------
+  # 告警 —— ECS 资源
+  # ---------------------------------------------------------------------------
+  EcsCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-ecs-cpu"
+      AlarmDescription: "ECS 服务 CPU 利用率过高"
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue { "Fn::Sub": "${ProjectName}-ECSClusterName" }
+        - Name: ServiceName
+          Value: !ImportValue { "Fn::Sub": "${ProjectName}-ECSServiceName" }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref EcsCpuThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  EcsMemAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-ecs-memory"
+      AlarmDescription: "ECS 服务内存利用率过高"
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue { "Fn::Sub": "${ProjectName}-ECSClusterName" }
+        - Name: ServiceName
+          Value: !ImportValue { "Fn::Sub": "${ProjectName}-ECSServiceName" }
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref EcsMemThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  RunningTaskAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-running-tasks-low"
+      AlarmDescription: "运行中的任务数低于期望值（容量/健康问题）"
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !ImportValue { "Fn::Sub": "${ProjectName}-ECSClusterName" }
+        - Name: ServiceName
+          Value: !ImportValue { "Fn::Sub": "${ProjectName}-ECSServiceName" }
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: !Ref DesiredTaskCount
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  # ---------------------------------------------------------------------------
+  # Dashboard
+  # ---------------------------------------------------------------------------
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ProjectName}-ops"
+      DashboardBody: !Sub
+        - |
+          {
+            "widgets": [
+              {"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{
+                "title":"请求量 (RequestCount)","region":"${AWS::Region}","stat":"Sum","period":300,
+                "metrics":[["AWS/ApplicationELB","RequestCount","LoadBalancer","${AlbName}"]]}},
+              {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{
+                "title":"错误率 4XX/5XX","region":"${AWS::Region}","stat":"Sum","period":300,
+                "metrics":[
+                  ["AWS/ApplicationELB","HTTPCode_ELB_4XX_Count","LoadBalancer","${AlbName}"],
+                  ["AWS/ApplicationELB","HTTPCode_Target_5XX_Count","LoadBalancer","${AlbName}"]]}},
+              {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{
+                "title":"响应时间 p95 (s)","region":"${AWS::Region}","stat":"p95","period":300,
+                "metrics":[["AWS/ApplicationELB","TargetResponseTime","LoadBalancer","${AlbName}"]]}},
+              {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{
+                "title":"ECS CPU/内存 (%)","region":"${AWS::Region}","stat":"Average","period":300,
+                "metrics":[
+                  ["AWS/ECS","CPUUtilization","ClusterName","${ClusterName}","ServiceName","${ServiceName}"],
+                  ["AWS/ECS","MemoryUtilization","ClusterName","${ClusterName}","ServiceName","${ServiceName}"]]}}
+            ]
+          }
+        - AlbName: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
+          ClusterName: !ImportValue { "Fn::Sub": "${ProjectName}-ECSClusterName" }
+          ServiceName: !ImportValue { "Fn::Sub": "${ProjectName}-ECSServiceName" }
+
+Outputs:
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+    Description: "SNS 告警主题 ARN（WAF 栈复用此主题发送 WAF 告警）"
+    Export:
+      Name: !Sub "${ProjectName}-ops-AlertTopicArn"
+  NotifierFunctionArn:
+    Value: !GetAtt NotifierFunction.Arn
+    Export:
+      Name: !Sub "${ProjectName}-ops-NotifierFunctionArn"
+  WebhookSecretArn:
+    Value: !Ref WebhookSecret
+    Description: "IM webhook 密钥 ARN（deploy 脚本用 put-secret-value 写入值）"
