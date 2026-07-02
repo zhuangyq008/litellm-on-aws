@@ -153,5 +153,7 @@ def handler(event, context):
         _send(title, lines, color)
         return {"ok": True}
 
-    print(f"Unrecognized event shape: {json.dumps(event)[:500]}")
+    # 只记录键名，不打印值——避免安全事件里的 ARN/IP/secretId 明文落 CloudWatch Logs
+    keys = list(event.keys())[:20] if isinstance(event, dict) else type(event).__name__
+    print(f"Unrecognized event shape, keys={keys}")
     return {"ok": False, "reason": "unrecognized event"}

@@ -16,7 +16,8 @@ Parameters:
   MasterKeyNamePattern:
     Type: String
     Default: "*master-key*"
-    Description: master key 密钥名/ARN 的通配匹配（用于捕获 GetSecretValue）
+    AllowedPattern: "^[a-zA-Z0-9_\\-/*]+$"
+    Description: master key 密钥名/ARN 的通配匹配（用于捕获 GetSecretValue；限 glob 安全字符）
 
 Resources:
   # ---- GuardDuty 发现（sev≥阈值）----
@@ -66,13 +67,20 @@ Resources:
           "detail-type": ["AWS API Call via CloudTrail"],
           "detail": {
             "eventName": ["GetSecretValue", "BatchGetSecretValue"],
-            "requestParameters": { "secretId": [ { "wildcard": "${MasterKeyNamePattern}" } ] }
+            "requestParameters": { "secretId": [ { "wildcard": "${MasterKeyNamePattern}" } ] },
+            "userIdentity": {
+              "arn": [ { "anything-but": { "prefix": "arn:aws:sts::${AWS::AccountId}:assumed-role/${ProjectName}-ecs-execution-role" } } ]
+            }
           }
         }
       State: ENABLED
       Targets:
         - Id: notifier
           Arn: !ImportValue { "Fn::Sub": "${ProjectName}-ops-NotifierFunctionArn" }
+          # 注意：EventBridge Input Transformer 不对插值做 JSON 转义。
+          # 只可引用 AWS 系统生成、字符集受约束的字段(ARN/IP/secretId/eventName/time)——
+          # 这些不含双引号，拼进 JSON 安全。严禁加入 errorMessage、任意 requestParameters
+          # 等用户可控内容，否则含 " 会破坏 JSON 使 Lambda 解析失败、告警静默丢失。
           InputTransformer:
             InputPathsMap:
               who: "$.detail.userIdentity.arn"
@@ -102,6 +110,7 @@ Resources:
       Description: "root 账户控制台登录即告警"
       EventPattern: |
         {
+          "source": ["aws.signin"],
           "detail-type": ["AWS Console Sign In via CloudTrail"],
           "detail": { "userIdentity": { "type": ["Root"] } }
         }

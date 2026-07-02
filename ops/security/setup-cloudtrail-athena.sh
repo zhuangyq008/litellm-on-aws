@@ -18,6 +18,9 @@ REGION="${AWS_REGION:-us-east-1}"
 : "${CLOUDTRAIL_BUCKET:?必须设置 CLOUDTRAIL_BUCKET（CloudTrail 日志所在的 S3 桶名，不含 s3://）}"
 ATHENA_DB="${ATHENA_DB:-litellm_gw_security}"
 ATHENA_TABLE="${ATHENA_TABLE:-cloudtrail_logs}"
+# identifier 只允许字母数字下划线，避免 DDL 解析问题/注入
+[[ "$ATHENA_DB" =~ ^[a-zA-Z0-9_]+$ ]]    || { echo "ERROR: ATHENA_DB 含非法字符" >&2; exit 1; }
+[[ "$ATHENA_TABLE" =~ ^[a-zA-Z0-9_]+$ ]] || { echo "ERROR: ATHENA_TABLE 含非法字符" >&2; exit 1; }
 ATHENA_OUTPUT="${ATHENA_OUTPUT:-s3://${CLOUDTRAIL_BUCKET}/athena-results/}"
 YEAR_RANGE="${YEAR_RANGE:-2024,2030}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -44,11 +47,11 @@ REGIONS="us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1,eu-central-1,ap-south
 
 # ---------- 2. 组装 DDL ----------
 read -r -d '' CREATE_DB <<SQL || true
-CREATE DATABASE IF NOT EXISTS ${ATHENA_DB};
+CREATE DATABASE IF NOT EXISTS \`${ATHENA_DB}\`;
 SQL
 
 read -r -d '' CREATE_TABLE <<SQL || true
-CREATE EXTERNAL TABLE IF NOT EXISTS ${ATHENA_DB}.${ATHENA_TABLE} (
+CREATE EXTERNAL TABLE IF NOT EXISTS \`${ATHENA_DB}\`.\`${ATHENA_TABLE}\` (
     eventVersion STRING,
     userIdentity STRUCT<
         type: STRING, principalId: STRING, arn: STRING, accountId: STRING,
