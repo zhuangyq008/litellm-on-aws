@@ -36,7 +36,13 @@ def _get_webhook_config():
 
 def _parse_sns(record):
     """解析 CloudWatch Alarm -> SNS 的消息体，归一化为 (title, lines[], color)。"""
-    msg = json.loads(record["Sns"]["Message"])
+    return _alarm_to_msg(json.loads(record["Sns"]["Message"]))
+
+
+def _alarm_to_msg(msg):
+    """把告警形状的 dict 归一化为 (title, lines[], color)。
+    既用于 CloudWatch Alarm→SNS，也用于 EventBridge 经 Input Transformer 塑形后的直调事件
+    （GuardDuty / 密钥读取 / root 登录等安全事件）。"""
     state = msg.get("NewStateValue", "UNKNOWN")
     color = {"ALARM": "red", "OK": "green", "INSUFFICIENT_DATA": "grey"}.get(state, "orange")
     title = f"[{state}] {msg.get('AlarmName', 'CloudWatch Alarm')}"
@@ -133,11 +139,18 @@ def _send(title, lines, color):
 
 
 def handler(event, context):
+    # 入口 A：CloudWatch Alarm → SNS
     if isinstance(event, dict) and "Records" in event:
         for record in event["Records"]:
             if record.get("EventSource") == "aws:sns" or "Sns" in record:
                 title, lines, color = _parse_sns(record)
                 _send(title, lines, color)
+        return {"ok": True}
+
+    # 入口 B：EventBridge 直调（安全事件），已由 Input Transformer 塑形成告警形状
+    if isinstance(event, dict) and "AlarmName" in event:
+        title, lines, color = _alarm_to_msg(event)
+        _send(title, lines, color)
         return {"ok": True}
 
     print(f"Unrecognized event shape: {json.dumps(event)[:500]}")

@@ -104,12 +104,14 @@ Resources:
           IM_TYPE: !Ref ImType
           WEBHOOK_SECRET_ARN: !Ref WebhookSecret
 
+  # 注意：不要用 AWS 托管密钥 alias/aws/sns 加密本主题——CloudWatch 告警服务主体
+  # 无权使用该托管密钥(GenerateDataKey/Decrypt)，会导致告警投递静默失败。
+  # 如需静态加密，须改用客户托管 CMK 并在 key policy 授权 cloudwatch.amazonaws.com。
   AlertTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "${ProjectName}-ops-alerts"
       DisplayName: "LiteLLM GW Ops Alerts"
-      KmsMasterKeyId: "alias/aws/sns"
 
   NotifierSnsPermission:
     Type: AWS::Lambda::Permission

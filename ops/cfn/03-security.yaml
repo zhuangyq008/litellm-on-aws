@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  LiteLLM Gateway - Ops 独立模块 (3/3): 安全事件告警。
+  EventBridge 规则捕获 GuardDuty 发现 / master key 密钥读取 / root 登录，
+  经 Input Transformer 塑形后直投现有通知 Lambda（复用飞书通道，不改 Lambda 主链路）。
+  依赖：monitoring 栈已部署（导出 NotifierFunctionArn）；账号已开 CloudTrail 与 GuardDuty。
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+  GuardDutySeverityThreshold:
+    Type: Number
+    Default: 4
+    Description: GuardDuty 告警的最低 severity（4=Medium,7=High,8+=Critical）
+  MasterKeyNamePattern:
+    Type: String
+    Default: "*master-key*"
+    Description: master key 密钥名/ARN 的通配匹配（用于捕获 GetSecretValue）
+
+Resources:
+  # ---- GuardDuty 发现（sev≥阈值）----
+  GuardDutyRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-ops-guardduty-findings"
+      Description: "GuardDuty 发现达到阈值即告警"
+      EventPattern: !Sub |
+        {
+          "source": ["aws.guardduty"],
+          "detail-type": ["GuardDuty Finding"],
+          "detail": { "severity": [ { "numeric": [ ">=", ${GuardDutySeverityThreshold} ] } ] }
+        }
+      State: ENABLED
+      Targets:
+        - Id: notifier
+          Arn: !ImportValue { "Fn::Sub": "${ProjectName}-ops-NotifierFunctionArn" }
+          InputTransformer:
+            InputPathsMap:
+              sev: "$.detail.severity"
+              typ: "$.detail.type"
+              region: "$.region"
+              acct: "$.account"
+              time: "$.time"
+            InputTemplate: >-
+              {"AlarmName":"GuardDuty <typ>","NewStateValue":"ALARM","AlarmDescription":"GuardDuty
+              检测到安全威胁","NewStateReason":"severity=<sev> account=<acct>","Region":"<region>","StateChangeTime":"<time>"}
+
+  GuardDutyPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue { "Fn::Sub": "${ProjectName}-ops-NotifierFunctionArn" }
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GuardDutyRule.Arn
+
+  # ---- master key 密钥被读取（抓泄露源头）----
+  SecretReadRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-ops-master-key-read"
+      Description: "GetSecretValue 命中 master key 即告警（含 ECS 拉取，正常部署时会触发，看 principal 区分）"
+      EventPattern: !Sub |
+        {
+          "source": ["aws.secretsmanager"],
+          "detail-type": ["AWS API Call via CloudTrail"],
+          "detail": {
+            "eventName": ["GetSecretValue", "BatchGetSecretValue"],
+            "requestParameters": { "secretId": [ { "wildcard": "${MasterKeyNamePattern}" } ] }
+          }
+        }
+      State: ENABLED
+      Targets:
+        - Id: notifier
+          Arn: !ImportValue { "Fn::Sub": "${ProjectName}-ops-NotifierFunctionArn" }
+          InputTransformer:
+            InputPathsMap:
+              who: "$.detail.userIdentity.arn"
+              ip: "$.detail.sourceIPAddress"
+              evt: "$.detail.eventName"
+              sid: "$.detail.requestParameters.secretId"
+              region: "$.region"
+              time: "$.time"
+            InputTemplate: >-
+              {"AlarmName":"master key 密钥被读取","NewStateValue":"ALARM","AlarmDescription":"Secrets
+              Manager 上 master key 被 GetSecretValue","NewStateReason":"principal=<who> ip=<ip>
+              event=<evt> secret=<sid>","Region":"<region>","StateChangeTime":"<time>"}
+
+  SecretReadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue { "Fn::Sub": "${ProjectName}-ops-NotifierFunctionArn" }
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SecretReadRule.Arn
+
+  # ---- root 账户控制台登录 ----
+  RootLoginRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-ops-root-console-login"
+      Description: "root 账户控制台登录即告警"
+      EventPattern: |
+        {
+          "detail-type": ["AWS Console Sign In via CloudTrail"],
+          "detail": { "userIdentity": { "type": ["Root"] } }
+        }
+      State: ENABLED
+      Targets:
+        - Id: notifier
+          Arn: !ImportValue { "Fn::Sub": "${ProjectName}-ops-NotifierFunctionArn" }
+          InputTransformer:
+            InputPathsMap:
+              who: "$.detail.userIdentity.arn"
+              ip: "$.detail.sourceIPAddress"
+              result: "$.detail.responseElements.ConsoleLogin"
+              region: "$.region"
+              time: "$.time"
+            InputTemplate: >-
+              {"AlarmName":"Root 账户登录","NewStateValue":"ALARM","AlarmDescription":"检测到 root
+              控制台登录","NewStateReason":"principal=<who> ip=<ip> result=<result>","Region":"<region>","StateChangeTime":"<time>"}
+
+  RootLoginPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue { "Fn::Sub": "${ProjectName}-ops-NotifierFunctionArn" }
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RootLoginRule.Arn
+
+Outputs:
+  GuardDutyRuleArn:
+    Value: !GetAtt GuardDutyRule.Arn
+  SecretReadRuleArn:
+    Value: !GetAtt SecretReadRule.Arn

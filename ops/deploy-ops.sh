@@ -42,6 +42,9 @@ ARTIFACT_BUCKET="${PROJECT_NAME}-ops-artifacts-${ACCOUNT_ID}"
 
 MON_STACK="${PROJECT_NAME}-ops-monitoring"
 WAF_STACK="${PROJECT_NAME}-ops-waf"
+SEC_STACK="${PROJECT_NAME}-ops-security"
+GUARDDUTY_SEVERITY="${GUARDDUTY_SEVERITY:-4}"
+MASTER_KEY_PATTERN="${MASTER_KEY_PATTERN:-*master-key*}"
 
 # ---------- 前置检查：主栈导出 ----------
 if ! aws cloudformation list-exports --region "$REGION" \
@@ -116,6 +119,18 @@ aws cloudformation deploy \
     "AllowedCountries=${ALLOWED_COUNTRIES}" \
     "AlertTopicArn=${SNS_ARN}"
 
+# ========== Step 3: 安全事件告警栈（GuardDuty / 密钥读取 / root 登录）==========
+log "部署 ${SEC_STACK}"
+aws cloudformation deploy \
+  --template-file "${SCRIPT_DIR}/cfn/03-security.yaml" \
+  --stack-name "$SEC_STACK" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region "$REGION" \
+  --parameter-overrides \
+    "ProjectName=${PROJECT_NAME}" \
+    "GuardDutySeverityThreshold=${GUARDDUTY_SEVERITY}" \
+    "MasterKeyNamePattern=${MASTER_KEY_PATTERN}"
+
 # ========== 输出 ==========
 DASH_URL="https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${PROJECT_NAME}-ops"
 echo ""
@@ -124,6 +139,8 @@ log " Ops 模块部署完成"
 log " 告警主题:   ${SNS_ARN}"
 log " Dashboard:  ${DASH_URL}"
 log " WAF WebACL: ${PROJECT_NAME}-ops-acl (已关联 ALB)"
+log " 安全告警:   GuardDuty(sev>=${GUARDDUTY_SEVERITY}) / master key 读取 / root 登录 → 飞书"
 log "========================================="
-log "卸载：aws cloudformation delete-stack --stack-name ${WAF_STACK} --region ${REGION}"
+log "卸载：aws cloudformation delete-stack --stack-name ${SEC_STACK} --region ${REGION}"
+log "      aws cloudformation delete-stack --stack-name ${WAF_STACK} --region ${REGION}"
 log "      aws cloudformation delete-stack --stack-name ${MON_STACK} --region ${REGION}"

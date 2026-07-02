@@ -176,6 +176,47 @@ curl -X POST https://aigw.enginez.link/key/generate \
 
 ---
 
+## 安全事件告警（03-security 栈）
+
+EventBridge 规则捕获安全事件，经 Input Transformer 塑形后直投通知 Lambda（复用飞书通道，不经 SNS、不改 Lambda 主链路）：
+
+| 规则 | 触发 | 用途 |
+|---|---|---|
+| `guardduty-findings` | GuardDuty 发现 severity ≥ `GuardDutySeverityThreshold`(默认4) | 复用已启用的 GuardDuty 检测凭证异常/外泄 |
+| `master-key-read` | Secrets Manager `GetSecretValue` 命中 `*master-key*` | **抓 master key 泄露源头**（ECS 部署拉密钥也会触发，看 principal 区分）|
+| `root-console-login` | root 账户控制台登录 | 高危账户使用告警 |
+
+> 前提：账号已开 CloudTrail(管理事件)与 GuardDuty。本栈依赖 monitoring 栈导出的 `NotifierFunctionArn`，deploy-ops.sh 会在 monitoring→waf→security 顺序部署。
+
+## CloudTrail 取证（ops/security/，master key 泄露溯源）
+
+一次性建好 Athena 表，之后可随时查"谁在何时从哪个 IP 读了 master key / 改了 IAM / 登录了控制台"。**这是回答"上次 master key 怎么泄露的"的核心能力**——审计数据本就在 CloudTrail 里，缺的只是一张可查的表。
+
+```bash
+CLOUDTRAIL_BUCKET=<你的CloudTrail桶> \
+ATHENA_OUTPUT=s3://<你有写权限的桶>/athena-results/ \
+bash ops/security/setup-cloudtrail-athena.sh
+```
+
+脚本自动探测 org/账号级路径，建分区投影表 `litellm_gw_security.cloudtrail_logs`（无需 MSCK）。取证查询在 `ops/security/queries/`：
+
+| 查询 | 回答 |
+|---|---|
+| `01-master-key-reads.sql` | 谁读过 master key 密钥（时间/主体/IP/UserAgent）|
+| `02-master-key-reads-suspicious.sql` | 排除 ECS 角色后的可疑读取（泄露源候选）|
+| `03-sensitive-admin-api.sql` | IAM/密钥/WAF/SG/KMS 的写操作 |
+| `04-logins.sql` | root 登录 / 登录失败 / 无 MFA 登录 |
+| `05-iam-key-lifecycle.sql` | access key 与 IAM 凭证变更（防提权）|
+
+运行示例（`{{DB}}` 用 sed 替换；查询已带 `region='us-east-1'` 分区裁剪降本）：
+```bash
+aws athena start-query-execution --region us-east-1 \
+  --query-string "$(sed 's/{{DB}}/litellm_gw_security/g' ops/security/queries/01-master-key-reads.sql)" \
+  --result-configuration OutputLocation=s3://<桶>/athena-results/
+```
+
+> 成本提示：分区投影查询务必带 `region=` 且尽量收窄 `year/month/day`，否则会横扫多区域多日期（实测不裁剪一次扫 ~18GB）。
+
 ## 部署前安全门禁
 
 按团队规范，两个栈在部署前需过 `security-reviewer`：IAM 最小权限、WAF 规则正确性、无硬编码密钥、暴露面。已落实的加固：
