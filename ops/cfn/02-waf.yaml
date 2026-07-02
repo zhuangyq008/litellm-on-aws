@@ -103,10 +103,19 @@ Resources:
             ManagedRuleGroupStatement:
               VendorName: AWS
               Name: AWSManagedRulesCommonRuleSet
-              # LLM 网关请求体远大于 8KB（system prompt + 工具定义 + 上下文），
-              # 将 body 大小限制子规则改为 Count（仅计数不拦截），保留组内其余攻击防护。
+              # LLM 网关（尤其 Claude Code 这类代码 agent）的请求体特征会误触发以下子规则，
+              # 全部改为 Count（仅计数不拦截），保留组内其余攻击防护：
+              #  - SizeRestrictions_BODY：body 远大于 8KB（system prompt + 工具定义 + 上下文）
+              #  - GenericLFI_BODY：body 内含大量文件路径(../、/etc/ 等)被误判为本地文件包含攻击
+              #  - CrossSiteScripting_BODY：代码/HTML 片段被误判为 XSS
               RuleActionOverrides:
                 - Name: SizeRestrictions_BODY
+                  ActionToUse:
+                    Count: {}
+                - Name: GenericLFI_BODY
+                  ActionToUse:
+                    Count: {}
+                - Name: CrossSiteScripting_BODY
                   ActionToUse:
                     Count: {}
           VisibilityConfig:

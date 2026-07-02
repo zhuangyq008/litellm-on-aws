@@ -194,22 +194,33 @@ curl -X POST https://aigw.enginez.link/key/generate \
 
 ### 症状：客户端（尤其 Claude Code）请求被 403 拦截 / 提示重新登录
 
-**根因**：AWS 托管规则组 `AWSManagedRulesCommonRuleSet` 的子规则 `SizeRestrictions_BODY` 默认拦截 **请求体 > 8KB**。LLM 网关的请求（system prompt + 工具定义 + 上下文）普遍远超 8KB，会在到达 LiteLLM **之前**被 WAF 拦成 403。Claude Code 收不到有效响应，会误判为未认证并提示 `/login`。
+**根因**：AWS 托管规则组 `AWSManagedRulesCommonRuleSet` 的多条 body 子规则会误伤 LLM / 代码 agent 的请求，在到达 LiteLLM **之前**被 WAF 拦成 403。Claude Code 收不到有效响应，会误判为未认证并提示 `/login`。已知会误报的三条（均已在 `02-waf.yaml` override 为 Count）：
+
+| 子规则 | 误报原因 |
+|---|---|
+| `SizeRestrictions_BODY` | 请求体 > 8KB（system prompt + 工具定义 + 上下文普遍超限）|
+| `GenericLFI_BODY` | 请求体含大量文件路径（`../`、`/etc/`、绝对路径）被误判为本地文件包含攻击 —— Claude Code 读写代码文件必带路径 |
+| `CrossSiteScripting_BODY` | 请求体含 HTML/JS 代码片段被误判为 XSS |
+
+> 排错要点：命中的**子规则**在日志的 `ruleGroupList[].terminatingRule.ruleId` 字段，`terminatingRuleId` 只显示到组名（`AWSCommon`）。修完一条可能撞下一条，需逐条看子规则名。
 
 **判定方法**：
 ```bash
-# 小 body 通、大 body 403 → body 大小拦截
-curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $KEY" \
+# 1) 用错误 key 打请求：返回 403(而非 401) → 请求没到 LiteLLM，被 WAF 前置拦截
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer sk-WRONG" \
   https://aigw.enginez.link/v1/messages -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"'"$(python3 -c "print('x'*20000)")"'"}]}'
-# 用错误 key 打大 body：返回 403(非 401) → 请求没到 LiteLLM，被 WAF 前置拦截
-# WAF 日志确认命中规则：terminatingRule=AWSCommon
-aws logs get-log-events --log-group-name aws-waf-logs-litellm-gw-ops \
-  --log-stream-name "$(aws logs describe-log-streams --log-group-name aws-waf-logs-litellm-gw-ops \
-    --order-by LastEventTime --descending --max-items 1 --query 'logStreams[0].logStreamName' --output text)" \
-  --limit 5 --query 'events[].message' --output text
+  -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"读 ../etc/passwd"}]}'
+
+# 2) 用 Logs Insights 取一条完整 BLOCK 日志，看组内命中的子规则名
+aws logs start-query --log-group-name aws-waf-logs-litellm-gw-ops \
+  --start-time $(($(date +%s)-3600)) --end-time $(date +%s) \
+  --query-string 'fields @message | filter action="BLOCK" | limit 3'
+# 取 queryId 后 get-query-results，看 JSON 里：
+#   ruleGroupList[].terminatingRule.ruleId  ← 真正命中的子规则（如 GenericLFI_BODY）
+#   terminatingRuleMatchDetails[].location  ← 命中位置（如 BODY）
+#   httpRequest.headers[User-Agent]         ← 确认是 claude-cli/x.x.x
 ```
 
-**修复（已内置于 `02-waf.yaml`）**：在 `AWSCommon` 规则组用 `RuleActionOverrides` 把 `SizeRestrictions_BODY` 改为 `Count`（仅计数不拦截），保留组内其余攻击防护。改后重跑 `deploy-ops.sh` 即可。
+**修复（已内置于 `02-waf.yaml`）**：在 `AWSCommon` 规则组用 `RuleActionOverrides` 把上表三条子规则改为 `Count`（仅计数不拦截），保留组内其余攻击防护。改后重跑 `deploy-ops.sh` 即可。
 
-> 排错通法：任何"某类请求被拦"的问题，都先查 WAF 日志的 `terminatingRule` 字段定位是哪条规则/规则组，再针对性 override 为 Count 或调整。`KnownBadInputs`、`IpReputation` 组理论上也可能对特定 payload 误报。
+> 排错通法：任何"某类请求被拦"的问题，都先查 WAF 日志 `ruleGroupList[].terminatingRule.ruleId` 定位**具体子规则**（`terminatingRuleId` 只到组名），再针对性 override 为 Count。修完一条可能撞下一条（本项目就是先 `SizeRestrictions_BODY` 后 `GenericLFI_BODY`），逐条排。`KnownBadInputs`、`IpReputation` 组理论上也可能对特定 payload 误报。
