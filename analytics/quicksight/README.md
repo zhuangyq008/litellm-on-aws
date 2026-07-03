@@ -10,10 +10,16 @@
 ```bash
 # 1) 建策展视图(幂等)——用 Athena workgroup litellm-gw-audit
 #    (views.sql 里两条 CREATE OR REPLACE VIEW，可用 athena_run 或控制台执行)
-# 2) 建数据源 + 两个 SPICE 数据集 + 授 QS 服务角色 S3 权限 + 触发摄取
+# 2) 建数据源 + 两个 SPICE 数据集(ds-usage / ds-net) + 授 QS 服务角色 S3 权限 + 触发摄取
 bash analytics/quicksight/setup-quicksight.sh
-# 3) 到 QuickSight 控制台，用 ds-usage / ds-egress 两个数据集拖拽建 Analysis
+# 3) 建 Analysis + Dashboard(3 页:使用总览/安全与异常/网络取证)
+python3 analytics/quicksight/build-dashboard.py
+# 打开: https://us-east-1.quicksight.aws.amazon.com/sn/dashboards/litellm-gw-dashboard
 ```
+
+> 数据集用**字符串 key_type**('master_key'/'virtual_key')而非布尔 is_master_key
+> (QuickSight 布尔按 INTEGER 处理，不能作分类维度)。
+> 若反复删建数据集遇到 `marked as deleted`(QS 删除后 ID 有回收窗口)，换个数据集 ID 即可。
 
 ## 数据源与数据集
 

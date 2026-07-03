@@ -163,6 +163,29 @@ class TestParseMetadata:
         assert result["team_id"] == "6f33f9fc-5abf"
         assert result["key_user_id"] == "default_user_id"
 
+    def test_key_identity_not_forgeable_via_headers(self):
+        # headers 在 user_api_key_* 之前，且含同名伪造字段 —— 不得覆盖真实顶层值
+        metadata_str = str({
+            "headers": {"user_api_key_hash": "forged", "user_api_key_alias": "evil",
+                        "x-forwarded-for": "1.2.3.4"},
+            "user_id": '{"device_id":"d1","session_id":"s1"}',
+            "user_api_key_hash": "real_hash",
+            "user_api_key_alias": "hermes",
+        })
+        result = parse_metadata(metadata_str)
+        assert result["key_hash"] == "real_hash"
+        assert result["key_alias"] == "hermes"
+        assert result["source_ip"] == "1.2.3.4"
+        assert result["device_id"] == "d1"
+
+    def test_key_identity_not_forgeable_via_user_id(self):
+        # 攻击者把伪造串塞进用户可控的 user_id 值(内嵌 JSON) —— 不得被当成顶层 key
+        metadata_str = str({
+            "user_id": '{"device_id":"x","user_api_key_alias":"evil","session_id":"s"}',
+            "user_api_key_alias": "hermes",
+        })
+        assert parse_metadata(metadata_str)["key_alias"] == "hermes"
+
     def test_key_identity_none_coerced_to_empty(self):
         metadata_str = str({"user_api_key_alias": None, "user_api_key_end_user_id": None})
         result = parse_metadata(metadata_str)

@@ -11,7 +11,7 @@ SELECT
   CASE WHEN prompt_tokens > 0 THEN cached_tokens * 1.0 / prompt_tokens ELSE 0 END AS cache_hit_ratio,
   has_tool_calls, message_count,
   key_alias, key_hash, team_id, key_user_id,
-  (key_alias = '' OR key_alias IS NULL)                                 AS is_master_key,
+  CASE WHEN key_alias = '' OR key_alias IS NULL THEN 'master_key' ELSE 'virtual_key' END AS key_type,
   session_id, device_id, source_ip,
   year, month, day
 FROM "litellm-gw_audit".audit_logs;
@@ -23,7 +23,7 @@ CREATE OR REPLACE VIEW litellm_gw_security.vw_qs_egress AS
 SELECT
   year, month, day, region, action, flow_direction,
   dstaddr AS dest_ip, dstport AS dest_port, interface_id,
-  (dstaddr NOT LIKE '10.%')       AS is_external,
+  NOT regexp_like(dstaddr, '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)') AS is_external,
   COUNT(*)                        AS flows,
   SUM(bytes)                      AS bytes,
   SUM(packets)                    AS packets

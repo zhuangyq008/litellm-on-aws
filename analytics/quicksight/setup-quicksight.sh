@@ -22,12 +22,15 @@ log "QS 用户: ${QS_USER_ARN}"
 # ---------- 0. 给 QuickSight 服务角色最小权限 S3(QS+Athena 前提) ----------
 # QS 跑 Athena 查询时，服务角色需读源数据桶 + 写 Athena 结果。缺失会导致 SPICE 摄取
 # PERMISSION_DENIED(s3:ListBucket)。put-role-policy 幂等。
-log "授予 QS 服务角色 ${QS_ROLE} 对源桶的最小权限 S3"
+# 桶名校验(防变量注入进 IAM 策略 JSON)
+[[ "$AUDIT_BUCKET" =~ ^[a-z0-9.-]+$ ]]    || { echo "ERROR: AUDIT_BUCKET 名非法" >&2; exit 1; }
+[[ "$FLOWLOGS_BUCKET" =~ ^[a-z0-9.-]+$ ]] || { echo "ERROR: FLOWLOGS_BUCKET 名非法" >&2; exit 1; }
+log "授予 QS 服务角色 ${QS_ROLE} 对源桶的最小权限 S3(仅 Athena 实际读写的前缀)"
 aws iam put-role-policy --role-name "$QS_ROLE" --policy-name litellm-gw-quicksight-s3 \
   --policy-document "$(cat <<JSON
 {"Version":"2012-10-17","Statement":[
  {"Sid":"QSList","Effect":"Allow","Action":"s3:ListBucket","Resource":["arn:aws:s3:::${AUDIT_BUCKET}","arn:aws:s3:::${FLOWLOGS_BUCKET}"]},
- {"Sid":"QSRead","Effect":"Allow","Action":"s3:GetObject","Resource":["arn:aws:s3:::${AUDIT_BUCKET}/*","arn:aws:s3:::${FLOWLOGS_BUCKET}/*"]},
+ {"Sid":"QSReadData","Effect":"Allow","Action":"s3:GetObject","Resource":["arn:aws:s3:::${AUDIT_BUCKET}/logs/*","arn:aws:s3:::${FLOWLOGS_BUCKET}/AWSLogs/*"]},
  {"Sid":"QSResults","Effect":"Allow","Action":["s3:PutObject","s3:GetObject","s3:AbortMultipartUpload"],"Resource":"arn:aws:s3:::${AUDIT_BUCKET}/athena-results/*"}
 ]}
 JSON
@@ -78,11 +81,11 @@ JSON
     || log "  ⚠ ${id} 摄取触发失败(多半是 QS 服务角色缺 S3/Athena 权限，见 README)"
 }
 
-USAGE_COLS='[{"Name":"request_ts","Type":"DATETIME"},{"Name":"request_date","Type":"DATETIME"},{"Name":"model","Type":"STRING"},{"Name":"call_type","Type":"STRING"},{"Name":"finish_reason","Type":"STRING"},{"Name":"prompt_tokens","Type":"INTEGER"},{"Name":"completion_tokens","Type":"INTEGER"},{"Name":"total_tokens","Type":"INTEGER"},{"Name":"cached_tokens","Type":"INTEGER"},{"Name":"reasoning_tokens","Type":"INTEGER"},{"Name":"cache_hit_ratio","Type":"DECIMAL"},{"Name":"has_tool_calls","Type":"BOOLEAN"},{"Name":"message_count","Type":"INTEGER"},{"Name":"key_alias","Type":"STRING"},{"Name":"key_hash","Type":"STRING"},{"Name":"team_id","Type":"STRING"},{"Name":"key_user_id","Type":"STRING"},{"Name":"is_master_key","Type":"BOOLEAN"},{"Name":"session_id","Type":"STRING"},{"Name":"device_id","Type":"STRING"},{"Name":"source_ip","Type":"STRING"},{"Name":"year","Type":"STRING"},{"Name":"month","Type":"STRING"},{"Name":"day","Type":"STRING"}]'
+USAGE_COLS='[{"Name":"request_ts","Type":"DATETIME"},{"Name":"request_date","Type":"DATETIME"},{"Name":"model","Type":"STRING"},{"Name":"call_type","Type":"STRING"},{"Name":"finish_reason","Type":"STRING"},{"Name":"prompt_tokens","Type":"INTEGER"},{"Name":"completion_tokens","Type":"INTEGER"},{"Name":"total_tokens","Type":"INTEGER"},{"Name":"cached_tokens","Type":"INTEGER"},{"Name":"reasoning_tokens","Type":"INTEGER"},{"Name":"cache_hit_ratio","Type":"DECIMAL"},{"Name":"has_tool_calls","Type":"BOOLEAN"},{"Name":"message_count","Type":"INTEGER"},{"Name":"key_alias","Type":"STRING"},{"Name":"key_hash","Type":"STRING"},{"Name":"team_id","Type":"STRING"},{"Name":"key_user_id","Type":"STRING"},{"Name":"key_type","Type":"STRING"},{"Name":"session_id","Type":"STRING"},{"Name":"device_id","Type":"STRING"},{"Name":"source_ip","Type":"STRING"},{"Name":"year","Type":"STRING"},{"Name":"month","Type":"STRING"},{"Name":"day","Type":"STRING"}]'
 EGRESS_COLS='[{"Name":"year","Type":"STRING"},{"Name":"month","Type":"STRING"},{"Name":"day","Type":"STRING"},{"Name":"region","Type":"STRING"},{"Name":"action","Type":"STRING"},{"Name":"flow_direction","Type":"STRING"},{"Name":"dest_ip","Type":"STRING"},{"Name":"dest_port","Type":"INTEGER"},{"Name":"interface_id","Type":"STRING"},{"Name":"is_external","Type":"BOOLEAN"},{"Name":"flows","Type":"INTEGER"},{"Name":"bytes","Type":"DECIMAL"},{"Name":"packets","Type":"INTEGER"}]'
 
 create_dataset "litellm-gw-ds-usage"  "LiteLLM GW 用量与安全"  "litellm-gw_audit"      "vw_qs_usage"  "$USAGE_COLS"
-create_dataset "litellm-gw-ds-egress" "LiteLLM GW 网络出站"    "litellm_gw_security"   "vw_qs_egress" "$EGRESS_COLS"
+create_dataset "litellm-gw-ds-net" "LiteLLM GW 网络出站"    "litellm_gw_security"   "vw_qs_egress" "$EGRESS_COLS"
 
 log "========================================="
 log " QuickSight 数据源与数据集就绪。到 QuickSight 控制台用这两个 SPICE 数据集拖拽建 Analysis："

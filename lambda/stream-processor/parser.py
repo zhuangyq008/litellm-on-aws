@@ -122,13 +122,18 @@ def parse_metadata(metadata_str: str) -> dict:
     if not metadata_str or not isinstance(metadata_str, str):
         return defaults
 
-    # 用正则按字段抽取，不做整体 ast.literal_eval —— LiteLLM 的 metadata 常含
-    # 非字面量对象 repr（如 datetime、自定义类），整体解析会抛异常导致所有字段丢失。
-    def _field(name: str) -> str:
-        # 匹配 'name': 'value'（value 为 None 时不匹配 → 返回空，master key 常见）
-        m = re.search(r"['\"]%s['\"]\s*:\s*['\"]([^'\"]*)['\"]" % re.escape(name), metadata_str)
-        return m.group(1) if m else ""
+    # 用正则按字段抽取，不做整体 ast.literal_eval —— LiteLLM 的 metadata 含非字面量
+    # 对象 repr(datetime/自定义类)，整体解析必失败。
 
+    # source_ip：仅从 headers 块内取 x-forwarded-for（其本身即客户端来源）
+    source_ip = ""
+    hm = re.search(r"['\"]headers['\"]\s*:\s*\{([^}]*)\}", metadata_str)
+    if hm:
+        fwd = re.search(r"['\"]x-forwarded-for['\"]\s*:\s*['\"]([^'\"]*)['\"]", hm.group(1))
+        if fwd:
+            source_ip = fwd.group(1).split(",")[0].strip()
+
+    # device/session：从 user_id 的内嵌 JSON 取
     device_id = ""
     session_id = ""
     uid = re.search(r"['\"]user_id['\"]\s*:\s*'(\{[^}]*\})'", metadata_str)
@@ -140,17 +145,29 @@ def parse_metadata(metadata_str: str) -> dict:
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    forwarded = _field("x-forwarded-for")
-    source_ip = forwarded.split(",")[0].strip() if forwarded else ""
+    # key 身份：user_api_key_* 是 LiteLLM 设的**顶层标量**。先剥掉最外层 {}，再反复
+    # 抹掉所有嵌套 {..} 块(headers、user_id 内嵌 JSON 等一切用户可控内容)，防止攻击者
+    # 用请求头/字段名伪造 'user_api_key_alias':'admin' 冒充归因(re.search 取首个匹配的注入漏洞)。
+    masked = metadata_str.strip()
+    if masked[:1] == "{" and masked[-1:] == "}":
+        masked = masked[1:-1]
+    prev = None
+    while prev != masked and "{" in masked:
+        prev = masked
+        masked = re.sub(r"\{[^{}]*\}", "", masked)
+
+    def _top(name: str) -> str:
+        m = re.search(r"['\"]%s['\"]\s*:\s*['\"]([^'\"]*)['\"]" % re.escape(name), masked)
+        return m.group(1) if m else ""
 
     return {
         "device_id": device_id,
         "session_id": session_id,
         "source_ip": source_ip,
-        "key_hash": _field("user_api_key_hash"),
-        "key_alias": _field("user_api_key_alias"),
-        "team_id": _field("user_api_key_team_id"),
-        "key_user_id": _field("user_api_key_user_id"),
+        "key_hash": _top("user_api_key_hash"),
+        "key_alias": _top("user_api_key_alias"),
+        "team_id": _top("user_api_key_team_id"),
+        "key_user_id": _top("user_api_key_user_id"),
     }
 
 
