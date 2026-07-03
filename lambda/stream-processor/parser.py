@@ -110,40 +110,48 @@ def parse_messages(messages_str: str) -> dict:
 
 
 def parse_metadata(metadata_str: str) -> dict:
-    defaults = {"device_id": "", "session_id": "", "source_ip": ""}
+    defaults = {
+        "device_id": "",
+        "session_id": "",
+        "source_ip": "",
+        "key_hash": "",
+        "key_alias": "",
+        "team_id": "",
+        "key_user_id": "",
+    }
     if not metadata_str or not isinstance(metadata_str, str):
         return defaults
-    try:
-        metadata = ast.literal_eval(metadata_str)
-        if not isinstance(metadata, dict):
-            return defaults
 
-        device_id = ""
-        session_id = ""
-        source_ip = ""
+    # 用正则按字段抽取，不做整体 ast.literal_eval —— LiteLLM 的 metadata 常含
+    # 非字面量对象 repr（如 datetime、自定义类），整体解析会抛异常导致所有字段丢失。
+    def _field(name: str) -> str:
+        # 匹配 'name': 'value'（value 为 None 时不匹配 → 返回空，master key 常见）
+        m = re.search(r"['\"]%s['\"]\s*:\s*['\"]([^'\"]*)['\"]" % re.escape(name), metadata_str)
+        return m.group(1) if m else ""
 
-        user_id_str = metadata.get("user_id", "")
-        if isinstance(user_id_str, str) and user_id_str.startswith("{"):
-            try:
-                user_id_obj = json.loads(user_id_str)
-                device_id = user_id_obj.get("device_id", "")
-                session_id = user_id_obj.get("session_id", "")
-            except json.JSONDecodeError:
-                pass
+    device_id = ""
+    session_id = ""
+    uid = re.search(r"['\"]user_id['\"]\s*:\s*'(\{[^}]*\})'", metadata_str)
+    if uid:
+        try:
+            user_id_obj = json.loads(uid.group(1))
+            device_id = user_id_obj.get("device_id", "")
+            session_id = user_id_obj.get("session_id", "")
+        except (json.JSONDecodeError, AttributeError):
+            pass
 
-        headers = metadata.get("headers", {})
-        if isinstance(headers, dict):
-            forwarded = headers.get("x-forwarded-for", "")
-            if forwarded:
-                source_ip = forwarded.split(",")[0].strip()
+    forwarded = _field("x-forwarded-for")
+    source_ip = forwarded.split(",")[0].strip() if forwarded else ""
 
-        return {
-            "device_id": device_id,
-            "session_id": session_id,
-            "source_ip": source_ip,
-        }
-    except Exception:
-        return defaults
+    return {
+        "device_id": device_id,
+        "session_id": session_id,
+        "source_ip": source_ip,
+        "key_hash": _field("user_api_key_hash"),
+        "key_alias": _field("user_api_key_alias"),
+        "team_id": _field("user_api_key_team_id"),
+        "key_user_id": _field("user_api_key_user_id"),
+    }
 
 
 def _get_s(record: dict, key: str) -> str:

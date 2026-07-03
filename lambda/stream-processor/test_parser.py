@@ -150,11 +150,30 @@ class TestParseMetadata:
         result = parse_metadata(metadata_str)
         assert result["source_ip"] == "44.219.177.250"
 
+    def test_extracts_key_identity(self):
+        metadata_str = str({
+            "user_api_key_hash": "6bbc402400a8ec54",
+            "user_api_key_alias": "hermes",
+            "user_api_key_team_id": "6f33f9fc-5abf",
+            "user_api_key_user_id": "default_user_id",
+        })
+        result = parse_metadata(metadata_str)
+        assert result["key_hash"] == "6bbc402400a8ec54"
+        assert result["key_alias"] == "hermes"
+        assert result["team_id"] == "6f33f9fc-5abf"
+        assert result["key_user_id"] == "default_user_id"
+
+    def test_key_identity_none_coerced_to_empty(self):
+        metadata_str = str({"user_api_key_alias": None, "user_api_key_end_user_id": None})
+        result = parse_metadata(metadata_str)
+        assert result["key_alias"] == ""  # None → "" (master key 常见)
+
     def test_returns_defaults_on_unparseable(self):
         result = parse_metadata("not a dict")
         assert result["device_id"] == ""
         assert result["session_id"] == ""
         assert result["source_ip"] == ""
+        assert result["key_alias"] == ""
 
 
 class TestTransformRecord:

@@ -179,6 +179,14 @@ Resources:
               Type: string
             - Name: source_ip
               Type: string
+            - Name: key_hash
+              Type: string
+            - Name: key_alias
+              Type: string
+            - Name: team_id
+              Type: string
+            - Name: key_user_id
+              Type: string
             - Name: raw_messages
               Type: string
             - Name: raw_response
