@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  LiteLLM Gateway - Ops 独立模块 (4): VPC Flow Logs → S3(取证) + NAT 出站字节量异常告警。
+  自有 Flow Logs 补足 GuardDuty(GuardDuty 内部另有独立流日志做检测，不落本账号)：
+  提供原始连接记录用于事后溯源"外传到哪、多少字节、什么时段"。
+  NAT 出站字节异常检测为数据外泄提供实时信号，复用 monitoring 栈的 SNS 通道。
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+  RetentionDays:
+    Type: Number
+    Default: 90
+    Description: Flow Logs 在 S3 的保留天数
+  MaxAggregationInterval:
+    Type: Number
+    Default: 600
+    AllowedValues: [60, 600]
+    Description: Flow Logs 聚合窗口秒（60 更细但量更大）
+  NatGatewayId1:
+    Type: String
+    Default: ""
+    Description: NAT 网关 1（出站字节异常告警；留空则不建）
+  NatGatewayId2:
+    Type: String
+    Default: ""
+    Description: NAT 网关 2（可选）
+
+Conditions:
+  HasNat1: !Not [!Equals [!Ref NatGatewayId1, ""]]
+  HasNat2: !Not [!Equals [!Ref NatGatewayId2, ""]]
+
+Resources:
+  # ---- Flow Logs 落地桶 ----
+  FlowLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-ops-flowlogs-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire
+            Status: Enabled
+            ExpirationInDays: !Ref RetentionDays
+
+  FlowLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FlowLogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSLogDeliveryWrite
+            Effect: Allow
+            Principal: { Service: delivery.logs.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${FlowLogsBucket}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: AWSLogDeliveryCheck
+            Effect: Allow
+            Principal: { Service: delivery.logs.amazonaws.com }
+            Action: [s3:GetBucketAcl, s3:ListBucket]
+            Resource: !Sub "arn:aws:s3:::${FlowLogsBucket}"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # ---- VPC Flow Log（自定义字段，含 pkt-srcaddr/flow-direction/traffic-path 便于取证）----
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    DependsOn: FlowLogsBucketPolicy
+    Properties:
+      ResourceId: !ImportValue { "Fn::Sub": "${ProjectName}-VpcId" }
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: s3
+      LogDestination: !GetAtt FlowLogsBucket.Arn
+      MaxAggregationInterval: !Ref MaxAggregationInterval
+      LogFormat: "${version} ${account-id} ${interface-id} ${srcaddr} ${dstaddr} ${srcport} ${dstport} ${protocol} ${packets} ${bytes} ${start} ${end} ${action} ${log-status} ${vpc-id} ${subnet-id} ${instance-id} ${tcp-flags} ${type} ${pkt-srcaddr} ${pkt-dstaddr} ${az-id} ${flow-direction} ${traffic-path}"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ops-vpc-flowlog"
+
+  # ---- NAT 出站字节量异常检测（数据外泄实时信号）----
+  NatEgressAnomaly1:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNat1
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-nat1-egress-anomaly"
+      AlarmDescription: "NAT1 出站字节量偏离基线（疑似数据外泄/异常出站）"
+      ComparisonOperator: GreaterThanUpperThreshold
+      EvaluationPeriods: 2
+      ThresholdMetricId: ad1
+      TreatMissingData: notBreaching
+      AlarmActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
+      OKActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              Namespace: AWS/NATGateway
+              MetricName: BytesOutToDestination
+              Dimensions:
+                - Name: NatGatewayId
+                  Value: !Ref NatGatewayId1
+            Period: 300
+            Stat: Sum
+          ReturnData: true
+        - Id: ad1
+          Expression: "ANOMALY_DETECTION_BAND(m1, 3)"
+          Label: "egress bytes (expected)"
+          ReturnData: true
+
+  NatEgressAnomaly2:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNat2
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-nat2-egress-anomaly"
+      AlarmDescription: "NAT2 出站字节量偏离基线（疑似数据外泄/异常出站）"
+      ComparisonOperator: GreaterThanUpperThreshold
+      EvaluationPeriods: 2
+      ThresholdMetricId: ad1
+      TreatMissingData: notBreaching
+      AlarmActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
+      OKActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
+      Metrics:
+        - Id: m1
+          MetricStat:
+            Metric:
+              Namespace: AWS/NATGateway
+              MetricName: BytesOutToDestination
+              Dimensions:
+                - Name: NatGatewayId
+                  Value: !Ref NatGatewayId2
+            Period: 300
+            Stat: Sum
+          ReturnData: true
+        - Id: ad1
+          Expression: "ANOMALY_DETECTION_BAND(m1, 3)"
+          Label: "egress bytes (expected)"
+          ReturnData: true
+
+Outputs:
+  FlowLogsBucketName:
+    Value: !Ref FlowLogsBucket
+    Description: "Flow Logs S3 桶；用 setup-flowlogs-athena.sh 建取证表"
+    Export:
+      Name: !Sub "${ProjectName}-ops-FlowLogsBucket"

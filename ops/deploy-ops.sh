@@ -43,6 +43,7 @@ ARTIFACT_BUCKET="${PROJECT_NAME}-ops-artifacts-${ACCOUNT_ID}"
 MON_STACK="${PROJECT_NAME}-ops-monitoring"
 WAF_STACK="${PROJECT_NAME}-ops-waf"
 SEC_STACK="${PROJECT_NAME}-ops-security"
+FL_STACK="${PROJECT_NAME}-ops-flowlogs"
 GUARDDUTY_SEVERITY="${GUARDDUTY_SEVERITY:-4}"
 MASTER_KEY_PATTERN="${MASTER_KEY_PATTERN:-*master-key*}"
 
@@ -131,6 +132,23 @@ aws cloudformation deploy \
     "GuardDutySeverityThreshold=${GUARDDUTY_SEVERITY}" \
     "MasterKeyNamePattern=${MASTER_KEY_PATTERN}"
 
+# ========== Step 4: VPC Flow Logs → S3 取证 + NAT 出站异常告警 ==========
+VPCID="$(aws cloudformation list-exports --region "$REGION" \
+  --query "Exports[?Name=='${PROJECT_NAME}-VpcId'].Value" --output text)"
+mapfile -t NATS < <(aws ec2 describe-nat-gateways --region "$REGION" \
+  --filter "Name=vpc-id,Values=${VPCID}" "Name=state,Values=available" \
+  --query "NatGateways[].NatGatewayId" --output text | tr '\t' '\n')
+log "部署 ${FL_STACK}（NAT: ${NATS[*]:-none}）"
+aws cloudformation deploy \
+  --template-file "${SCRIPT_DIR}/cfn/04-flowlogs.yaml" \
+  --stack-name "$FL_STACK" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region "$REGION" \
+  --parameter-overrides \
+    "ProjectName=${PROJECT_NAME}" \
+    "NatGatewayId1=${NATS[0]:-}" \
+    "NatGatewayId2=${NATS[1]:-}"
+
 # ========== 输出 ==========
 DASH_URL="https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${PROJECT_NAME}-ops"
 echo ""
@@ -140,7 +158,9 @@ log " 告警主题:   ${SNS_ARN}"
 log " Dashboard:  ${DASH_URL}"
 log " WAF WebACL: ${PROJECT_NAME}-ops-acl (已关联 ALB)"
 log " 安全告警:   GuardDuty(sev>=${GUARDDUTY_SEVERITY}) / master key 读取 / root 登录 → 飞书"
+log " Flow Logs:  VPC→S3 取证 + NAT 出站异常告警(建表: ops/security/setup-flowlogs-athena.sh)"
 log "========================================="
-log "卸载：aws cloudformation delete-stack --stack-name ${SEC_STACK} --region ${REGION}"
+log "卸载：aws cloudformation delete-stack --stack-name ${FL_STACK} --region ${REGION}"
+log "      aws cloudformation delete-stack --stack-name ${SEC_STACK} --region ${REGION}"
 log "      aws cloudformation delete-stack --stack-name ${WAF_STACK} --region ${REGION}"
 log "      aws cloudformation delete-stack --stack-name ${MON_STACK} --region ${REGION}"

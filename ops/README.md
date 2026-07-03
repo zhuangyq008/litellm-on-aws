@@ -217,6 +217,27 @@ aws athena start-query-execution --region us-east-1 \
 
 > 成本提示：分区投影查询务必带 `region=` 且尽量收窄 `year/month/day`，否则会横扫多区域多日期（实测不裁剪一次扫 ~18GB）。
 
+## VPC Flow Logs 取证（04-flowlogs 栈）
+
+**为什么要自建 Flow Logs（即使 GuardDuty 已开）**：GuardDuty 的 `FLOW_LOGS` 特性会独立复制一份流日志做威胁检测，但**那份不落本账号、看不到原始记录**。自建 Flow Logs 提供原始连接记录供取证——回答"外传到哪个 IP、多少字节、什么时段、哪个 ENI"，是 GuardDuty 报警之外的取证广度。
+
+`04-flowlogs.yaml` 部署：
+- VPC Flow Logs（全流量，自定义字段含 `pkt-srcaddr/flow-direction/traffic-path`）→ 专用 S3 桶 `${ProjectName}-ops-flowlogs-<acct>`（加密+PAB+生命周期）
+- **NAT 出站字节量异常检测告警**（`AWS/NATGateway BytesOutToDestination` 异常带宽）→ 飞书：数据外泄的**实时**信号，复用 NAT 原生指标，零额外采集成本
+
+建取证表（Flow Logs 到 S3 有 ~10 分钟延迟）：
+```bash
+bash ops/security/setup-flowlogs-athena.sh   # 建 litellm_gw_security.vpc_flow_logs（分区投影）
+```
+查询在 `ops/security/queries/flow-*.sql`：
+| 查询 | 回答 |
+|---|---|
+| `flow-01-top-egress.sql` | 出站 TopN 外部目的地(按字节)——数据外泄排查 |
+| `flow-02-rejects.sql` | REJECT Top 源/目的——扫描/暴力/异常连接 |
+| `flow-03-egress-by-eni.sql` | 按 ENI 的出站字节——定位哪个容器外传最多 |
+
+> GuardDuty 现状(本账号)：`FLOW_LOGS/DNS/CLOUDTRAIL/S3/RDS_LOGIN/RUNTIME_MONITORING` 均已启用；`litellm-gw-cluster` 的 ECS Runtime 覆盖为 HEALTHY。网络威胁检测已实时工作，自建 Flow Logs 补的是取证广度与 NAT 出站量告警。
+
 ## 部署前安全门禁
 
 按团队规范，两个栈在部署前需过 `security-reviewer`：IAM 最小权限、WAF 规则正确性、无硬编码密钥、暴露面。已落实的加固：
