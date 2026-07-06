@@ -33,6 +33,11 @@ fi
 RATE_LIMIT_PER_KEY="${RATE_LIMIT_PER_KEY:-3000}"
 RATE_LIMIT_PER_IP="${RATE_LIMIT_PER_IP:-20000}"
 ENABLE_GEO_BLOCK="${ENABLE_GEO_BLOCK:-false}"
+# 告警阈值（客户可按实际基线覆盖；默认值按 2000+ 员工规模校准）
+HTTP_4XX_THRESHOLD="${HTTP_4XX_THRESHOLD:-1000}"
+HTTP_5XX_THRESHOLD="${HTTP_5XX_THRESHOLD:-25}"
+LATENCY_P95_THRESHOLD="${LATENCY_P95_THRESHOLD:-45}"
+REQUEST_ANOMALY_STDEV="${REQUEST_ANOMALY_STDEV:-3}"
 ALLOWED_COUNTRIES="${ALLOWED_COUNTRIES:-CN}"
 TARGET_GROUP_FULL_NAME="${TARGET_GROUP_FULL_NAME:-}"
 
@@ -90,7 +95,11 @@ aws cloudformation deploy \
   --parameter-overrides \
     "ProjectName=${PROJECT_NAME}" \
     "ImType=${IM_TYPE}" \
-    "TargetGroupFullName=${TARGET_GROUP_FULL_NAME}"
+    "TargetGroupFullName=${TARGET_GROUP_FULL_NAME}" \
+    "Http4xxThreshold=${HTTP_4XX_THRESHOLD}" \
+    "Http5xxThreshold=${HTTP_5XX_THRESHOLD}" \
+    "TargetResponseTimeThreshold=${LATENCY_P95_THRESHOLD}" \
+    "RequestCountAnomalyStdev=${REQUEST_ANOMALY_STDEV}"
 
 SNS_ARN="$(aws cloudformation describe-stacks --stack-name "$MON_STACK" --region "$REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='AlertTopicArn'].OutputValue" --output text)"
