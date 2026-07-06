@@ -23,16 +23,18 @@ Parameters:
     Description: 期望运行的 ECS 任务数（低于此值告警）
   Http5xxThreshold:
     Type: Number
-    Default: 10
-    Description: 5min 内 Target 5XX 数量阈值
+    Default: 25
+    Description: 5min 内 Target 5XX 数量阈值（2000+ 用户规模下 10 太敏感，上调减噪；5XX 仍属高优先级）
   Http4xxThreshold:
     Type: Number
-    Default: 100
-    Description: 5min 内 ELB 4XX 数量阈值（大量鉴权失败=撞库/滥用信号）
+    Default: 1000
+    Description: >
+      5min 内 Target 4XX 数量阈值（大量 401/403/429=凭证撞库/滥用信号）。2000+ 用户下
+      429(限额)/400(上下文超长) 是常态，阈值须高于正常噪声。客户按基线调整。
   TargetResponseTimeThreshold:
     Type: Number
-    Default: 30
-    Description: p95 目标响应时间阈值（秒）
+    Default: 45
+    Description: p95 目标响应时间阈值（秒）。LLM 长上下文首字节偏慢，30s 在大规模下易误报，上调至 45s
   EcsCpuThreshold:
     Type: Number
     Default: 85
@@ -43,8 +45,8 @@ Parameters:
     Description: ECS 服务内存利用率阈值（%）
   RequestCountAnomalyStdev:
     Type: Number
-    Default: 2
-    Description: 请求量异常检测带宽标准差（越大越不敏感）
+    Default: 3
+    Description: 请求量异常检测带宽标准差（越大越不敏感）。大规模流量波动大，2 偏敏感，用 3 减噪
   TargetGroupFullName:
     Type: String
     Default: ""
@@ -161,19 +163,21 @@ Resources:
           ReturnData: true
 
   # 大量 4XX（撞库/凭证滥用信号）
+  # 用 HTTPCode_Target_4XX_Count（后端 LiteLLM 产生的 401/403/429），而非 ELB_4XX
+  # （后者是 ALB 自身产生的 400/460/463，抓不到鉴权失败——这是修正前的选错指标）。
   Http4xxAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-ops-elb-4xx-spike"
-      AlarmDescription: "ALB 4XX 激增，可能为凭证撞库/滥用"
+      AlarmName: !Sub "${ProjectName}-ops-target-4xx-spike"
+      AlarmDescription: "后端 4XX 激增（401/403/429），可能为凭证撞库/滥用"
       Namespace: AWS/ApplicationELB
-      MetricName: HTTPCode_ELB_4XX_Count
+      MetricName: HTTPCode_Target_4XX_Count
       Dimensions:
         - Name: LoadBalancer
           Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
       Statistic: Sum
       Period: 300
-      EvaluationPeriods: 1
+      EvaluationPeriods: 2
       Threshold: !Ref Http4xxThreshold
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
@@ -326,7 +330,7 @@ Resources:
               {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{
                 "title":"错误率 4XX/5XX","region":"${AWS::Region}","stat":"Sum","period":300,
                 "metrics":[
-                  ["AWS/ApplicationELB","HTTPCode_ELB_4XX_Count","LoadBalancer","${AlbName}"],
+                  ["AWS/ApplicationELB","HTTPCode_Target_4XX_Count","LoadBalancer","${AlbName}"],
                   ["AWS/ApplicationELB","HTTPCode_Target_5XX_Count","LoadBalancer","${AlbName}"]]}},
               {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{
                 "title":"响应时间 p95 (s)","region":"${AWS::Region}","stat":"p95","period":300,

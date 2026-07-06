@@ -18,11 +18,22 @@ Parameters:
     Type: CommaDelimitedList
     Default: "0.0.0.0/32"
     Description: 管理操作允许的源 IPv4 CIDR 列表（EnableAdminLockdown=true 时生效，如 203.0.113.10/32,198.51.100.0/24）
-  RateLimit:
+  RateLimitPerKey:
     Type: Number
-    Default: 2000
+    Default: 3000
     MinValue: 100
-    Description: 单 IP 5 分钟内请求上限，超出自动 BLOCK（按客户正常峰值设定）
+    Description: >
+      单个 API key 5 分钟内请求上限（按 Authorization / x-api-key 头聚合），超出自动 BLOCK。
+      这是主限速手段：遏制单个被盗/滥用 key，而非按出口 IP 误伤共享 NAT 的整个企业。
+      应设为「单个重度用户（如 Claude Code）5 分钟峰值请求量」的若干倍。客户按实际用量调整。
+  RateLimitPerIp:
+    Type: Number
+    Default: 20000
+    MinValue: 100
+    Description: >
+      单个源 IP 5 分钟内请求上限（DoS 兜底 + 覆盖无鉴权头的洪泛）。2000+ 员工常共享公司出口
+      NAT IP，此值须显著高于「整个公司从单一出口 IP 的 5 分钟峰值请求量」，否则会误杀正常流量。
+      客户按实际出口 QPS 设定；无数据时先给高值，观察 Dashboard 请求量基线后再收紧。
   EnableGeoBlock:
     Type: String
     Default: "false"
@@ -227,19 +238,65 @@ Resources:
               MetricName: !Sub "${ProjectName}AdminLockdown"
           - !Ref "AWS::NoValue"
 
-        # 异常流量：单 IP 限速自动拦截
-        - Name: RateLimitPerIp
+        # 异常流量 1/3：按 API key 限速（Authorization: Bearer 头）——主限速
+        # 按 key 聚合，避免 2000+ 员工共享公司出口 NAT IP 时被按 IP 限速误杀。
+        # 无该头的请求不计入本规则（由下方 IP 兜底规则覆盖）。
+        - Name: RateLimitPerKeyAuth
           Priority: 30
           Action:
             Block: {}
           Statement:
             RateBasedStatement:
-              Limit: !Ref RateLimit
+              Limit: !Ref RateLimitPerKey
+              AggregateKeyType: CUSTOM_KEYS
+              CustomKeys:
+                - Header:
+                    Name: authorization
+                    TextTransformations:
+                      - Priority: 0
+                        Type: NONE
+          # 关闭采样：RedactedFields 只脱敏日志目标、不脱敏 Sampled Requests，
+          # 按鉴权头聚合时采样会露出 API key 明文。指标(CloudWatchMetrics)仍保留。
+          VisibilityConfig:
+            SampledRequestsEnabled: false
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${ProjectName}RateLimitKeyAuth"
+
+        # 异常流量 2/3：按 API key 限速（x-api-key 头）——Anthropic 原生客户端(如 Claude Code)
+        # 走 x-api-key 而非 Authorization，单独一条规则覆盖，否则这类流量将不受按-key 限速。
+        - Name: RateLimitPerKeyApiKey
+          Priority: 31
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimitPerKey
+              AggregateKeyType: CUSTOM_KEYS
+              CustomKeys:
+                - Header:
+                    Name: x-api-key
+                    TextTransformations:
+                      - Priority: 0
+                        Type: NONE
+          # 同上：关闭采样避免 x-api-key 明文出现在 Sampled Requests
+          VisibilityConfig:
+            SampledRequestsEnabled: false
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${ProjectName}RateLimitKeyApiKey"
+
+        # 异常流量 3/3：按源 IP 限速（DoS 兜底 + 覆盖无鉴权头的洪泛）——高阈值避免误杀共享出口 IP
+        - Name: RateLimitPerIp
+          Priority: 32
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimitPerIp
               AggregateKeyType: IP
           VisibilityConfig:
             SampledRequestsEnabled: true
             CloudWatchMetricsEnabled: true
-            MetricName: !Sub "${ProjectName}RateLimit"
+            MetricName: !Sub "${ProjectName}RateLimitIp"
 
   WebACLAssociation:
     Type: AWS::WAFv2::WebACLAssociation

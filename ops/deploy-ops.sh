@@ -30,7 +30,8 @@ if [ "$ENABLE_ADMIN_LOCKDOWN" = "true" ] && [ "$ALLOWED_ADMIN_CIDRS" = "0.0.0.0/
   echo "ERROR: ENABLE_ADMIN_LOCKDOWN=true 时必须设置真实的 ALLOWED_ADMIN_CIDRS（运维出口 IP）。" >&2
   exit 1
 fi
-RATE_LIMIT="${RATE_LIMIT:-2000}"
+RATE_LIMIT_PER_KEY="${RATE_LIMIT_PER_KEY:-3000}"
+RATE_LIMIT_PER_IP="${RATE_LIMIT_PER_IP:-20000}"
 ENABLE_GEO_BLOCK="${ENABLE_GEO_BLOCK:-false}"
 ALLOWED_COUNTRIES="${ALLOWED_COUNTRIES:-CN}"
 TARGET_GROUP_FULL_NAME="${TARGET_GROUP_FULL_NAME:-}"
@@ -115,7 +116,8 @@ aws cloudformation deploy \
     "ProjectName=${PROJECT_NAME}" \
     "EnableAdminLockdown=${ENABLE_ADMIN_LOCKDOWN}" \
     "AllowedAdminCidrs=${ALLOWED_ADMIN_CIDRS}" \
-    "RateLimit=${RATE_LIMIT}" \
+    "RateLimitPerKey=${RATE_LIMIT_PER_KEY}" \
+    "RateLimitPerIp=${RATE_LIMIT_PER_IP}" \
     "EnableGeoBlock=${ENABLE_GEO_BLOCK}" \
     "AllowedCountries=${ALLOWED_COUNTRIES}" \
     "AlertTopicArn=${SNS_ARN}"
