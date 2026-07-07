@@ -4,9 +4,9 @@
 
 | 关注点 | 落地手段 |
 |---|---|
-| **异常流量** | ALB `RequestCount` 异常检测告警 + WAF rate-based 单 IP 自动拦截 + 4XX 激增告警 |
+| **异常流量** | ALB `RequestCount` 异常检测告警 + WAF **按 API-key 聚合限速**（单 IP 兜底）+ 4XX 激增告警 |
 | **异常 token 消耗** | LiteLLM 原生 budget 强制限额（预防）+ budget/spend 告警（检测）— 见文末「可选」章节 |
-| **限制 master key 访问模型** | 分层方案：业务方用 virtual key，master key 仅管理用；WAF 对管理路径做 IP 白名单 |
+| **限制 master key 访问模型** | 分层方案：业务方用 virtual key，master key 仅管理用；WAF 对管理路径做 IP 白名单；**master key 使用绊线告警**（key 一被调用即飞书告警，见 03-security 章节）|
 
 > 本模块与网关本体**完全解耦**：只读引用主栈导出（`litellm-gw-ALBArn` / `-ECSClusterName` / `-ECSServiceName`），不修改任何主栈资源。独立部署脚本、独立文档、独立 CFN 栈，可随时整体删除而不影响网关。
 
@@ -25,9 +25,11 @@
                         └──────────────────────────────► 飞书/钉钉/企业微信群
 ```
 
-两个独立栈：
+四个独立栈（deploy-ops.sh 按序部署）：
 - `litellm-gw-ops-monitoring` — SNS + 通知 Lambda + CloudWatch 告警 + Dashboard
 - `litellm-gw-ops-waf` — Regional WebACL + IPSet + 规则 + 日志 + ALB 关联 + WAF 告警
+- `litellm-gw-ops-security` — 安全事件告警（GuardDuty / 密钥读取 / root 登录 / **master key 使用**）
+- `litellm-gw-ops-flowlogs` — VPC Flow Logs 取证落盘 + NAT 出站流量异常告警
 
 ---
 
@@ -48,11 +50,13 @@ cp ops/params.example.env ops/params.env   # 填入 webhook / 白名单 / 阈值
 bash ops/deploy-ops.sh
 ```
 
-脚本会：自动创建工件桶 → 打包上传 `alert-notifier` Lambda → 部署 monitoring 栈 → 读取 SNS ARN → 部署 WAF 栈（把 WAF 告警接到同一 SNS）。
+脚本会：自动创建工件桶 → 打包上传 `alert-notifier` Lambda → 部署 monitoring 栈 → 读取 SNS ARN → 部署 WAF 栈（把 WAF 告警接到同一 SNS）→ 部署 security 栈 → 探测 NAT 网关并部署 flowlogs 栈。
 
 ### 卸载
 
 ```bash
+aws cloudformation delete-stack --stack-name litellm-gw-ops-flowlogs   --region us-east-1
+aws cloudformation delete-stack --stack-name litellm-gw-ops-security   --region us-east-1
 aws cloudformation delete-stack --stack-name litellm-gw-ops-waf        --region us-east-1
 aws cloudformation delete-stack --stack-name litellm-gw-ops-monitoring --region us-east-1
 ```
@@ -63,19 +67,25 @@ WAF 的 `WebACLAssociation` 会随栈删除自动从 ALB 解绑，网关不受�
 
 ## 告警清单与默认阈值
 
-| 告警 | 指标 | 默认条件 | 参数 |
-|---|---|---|---|
-| 请求量异常 | ALB `RequestCount` | 异常检测带宽(±2σ) 连续 2 周期越界 | `RequestCountAnomalyStdev` |
-| 4XX 激增 | ALB `HTTPCode_ELB_4XX_Count` | 5min > 100 | `Http4xxThreshold` |
-| 后端 5XX | ALB `HTTPCode_Target_5XX_Count` | 5min > 10 | `Http5xxThreshold` |
-| 延迟 p95 | ALB `TargetResponseTime` | p95 > 30s 连续 3 周期 | `TargetResponseTimeThreshold` |
-| CPU 高 | ECS `CPUUtilization` | > 85% 连续 3 周期 | `EcsCpuThreshold` |
-| 内存高 | ECS `MemoryUtilization` | > 85% 连续 3 周期 | `EcsMemThreshold` |
-| 任务数不足 | `RunningTaskCount` | < 期望值 连续 3 周期 | `DesiredTaskCount` |
-| 不健康目标 | ALB `UnHealthyHostCount` | > 0（需填 `TARGET_GROUP_FULL_NAME`）| `TargetGroupFullName` |
-| WAF 拦截激增 | `AWS/WAFV2 BlockedRequests` | 5min > 200 | `WafBlockedThreshold` |
+| 告警 | 指标 | 默认条件 | 参数 | 栈 |
+|---|---|---|---|---|
+| **master key 使用** | `litellm-gw/audit MasterKeyRequests` | 5min 内 > 0（绊线：一被使用即告警）| `MasterKeyUsageThreshold` | security |
+| 请求量异常 | ALB `RequestCount` | 异常检测带宽(3σ) 连续 2 周期越界 | `RequestCountAnomalyStdev` | monitoring |
+| 4XX 激增 | ALB `HTTPCode_Target_4XX_Count` | 5min > 1000 连续 2 周期 | `Http4xxThreshold` | monitoring |
+| 后端 5XX | ALB `HTTPCode_Target_5XX_Count` | 5min > 25 | `Http5xxThreshold` | monitoring |
+| 延迟 p95 | ALB `TargetResponseTime` | p95 > 45s 连续 3 周期 | `TargetResponseTimeThreshold` | monitoring |
+| CPU 高 | ECS `CPUUtilization` | > 85% 连续 3 周期 | `EcsCpuThreshold` | monitoring |
+| 内存高 | ECS `MemoryUtilization` | > 85% 连续 3 周期 | `EcsMemThreshold` | monitoring |
+| 任务数不足 | `RunningTaskCount` | < 期望值 连续 3 周期 | `DesiredTaskCount` | monitoring |
+| 不健康目标 | ALB `UnHealthyHostCount` | > 0（需填 `TARGET_GROUP_FULL_NAME`）| `TargetGroupFullName` | monitoring |
+| WAF 拦截激增 | `AWS/WAFV2 BlockedRequests` | 5min > 200 | `WafBlockedThreshold` | waf |
+| NAT 出站异常 | `AWS/NATGateway BytesOutToDestination` | 异常检测带宽(6σ) 连续 2 周期越界 | `NatEgressAnomalyStdev` | flowlogs |
 
 阈值均为 CFN 参数，上线后按实际流量在 `params.env` / `--parameter-overrides` 调整重新部署即可。
+
+- **4XX 用 `Target_4XX` 而非 `ELB_4XX`**：后者是 ALB 自身的 400/460/463，抓不到 LiteLLM 返回的 401/403/429（凭证撞库信号）——这两个指标选错会导致撞库完全无感。
+- **4XX=1000 / 5XX=25 / p95=45s / 3σ**：按 2000+ 员工规模校准（429 限额、400 上下文超长、LLM 长首字节在此规模下是常态噪声）；上线一周后按真实基线回调。
+- **NAT 异常带宽默认 6σ**：用户爬坡期出站流量增长快、异常检测模型基线偏低，3σ 实测误报（正常增长 1.46 倍即触发）；6σ 仍能捕获量级级别的数据外泄。
 
 ---
 
@@ -88,8 +98,12 @@ WAF 的 `WebACLAssociation` 会随栈删除自动从 ALB 解绑，网关不受�
 | 5 | Geo 白名单（可选，`ENABLE_GEO_BLOCK=true`）| 非 `ALLOWED_COUNTRIES` → Block |
 | 10/11/12 | AWS 托管：Common / KnownBadInputs / IpReputation | 按厂商动作 |
 | 20 | **管理路径锁定**（可选，`ENABLE_ADMIN_LOCKDOWN=true`）| 命中管理路径 **且** 源 IP ∉ 白名单 → Block |
-| 30 | Rate-based | 单 IP 5min 超 `RATE_LIMIT` → Block |
+| 30 | Rate-based 按 key（`Authorization` 头聚合）| 单 key 5min 超 `RATE_LIMIT_PER_KEY`(默认3000) → Block |
+| 31 | Rate-based 按 key（`x-api-key` 头聚合，覆盖 Claude Code 原生头）| 同上 |
+| 32 | Rate-based 按 IP（DoS 兜底）| 单 IP 5min 超 `RATE_LIMIT_PER_IP`(默认20000) → Block |
 | 默认 | — | Allow |
+
+> **为何按 key 而非按 IP 限速**：2000+ 员工共享公司出口 NAT IP，按 IP 限速会误杀整个公司；按 key 聚合才能精准限住"某一把 key 被刷"——正是 key 泄露滥用场景。`RATE_LIMIT_PER_IP` 须设为整个公司单出口 5 分钟峰值的若干倍。两条 key 规则关闭了 Sampled Requests（WAF 采样不受 RedactedFields 脱敏，否则 key 明文落采样）。
 
 > **管理路径锁定为可开关**：`ENABLE_ADMIN_LOCKDOWN=false`（默认）时不创建 IPSet 与该规则，适合尚无固定运维出口 IP 的场景——此时 WAF 仅提供 rate-limit + 托管规则的「异常流量」防护。待有固定出口 IP 后，设 `ENABLE_ADMIN_LOCKDOWN=true` + 填 `ALLOWED_ADMIN_CIDRS`，重跑 `deploy-ops.sh` 即可启用 master key 管理路径限制。
 
@@ -186,7 +200,16 @@ EventBridge 规则捕获安全事件，经 Input Transformer 塑形后直投通�
 | `master-key-read` | Secrets Manager `GetSecretValue` 命中 `*master-key*` | **抓 master key 泄露源头**（ECS 部署拉密钥也会触发，看 principal 区分）|
 | `root-console-login` | root 账户控制台登录 | 高危账户使用告警 |
 
-> 前提：账号已开 CloudTrail(管理事件)与 GuardDuty。本栈依赖 monitoring 栈导出的 `NotifierFunctionArn`，deploy-ops.sh 会在 monitoring→waf→security 顺序部署。
+### master key 使用告警（本栈的 CloudWatch Alarm，泄露滥用的靶心信号）
+
+攻击者拿泄露的 master key 调 LLM API **不触碰任何 AWS 管理接口**，上表三条事件规则全部抓不到；这条告警直接盯"master key 被用于业务调用"本身：
+
+- **数据链路**：审计流水(DynamoDB Stream) → 主仓 `lambda/stream-processor` 解析 key 身份 → `key_alias` 为空(=master key，与审计湖/QuickSight 口径一致)时以 **EMF** 打 CloudWatch 指标 `litellm-gw/audit MasterKeyRequests` → 告警 `litellm-gw-ops-master-key-usage`(Sum/5min > `MasterKeyUsageThreshold`，默认 0) → SNS → 飞书。端到端延迟约 1~6 分钟。
+- **依赖主仓**：指标由主仓 stream-processor Lambda 产生（零 IAM 变更/零 API 调用，EMF 走日志通道）；该 Lambda 未部署新版时告警恒为 OK（无数据 = notBreaching）。
+- **绊线用法**：日常流量应全部走 virtual key，master key 用量恒为零——一动即异常。若现阶段仍有合法 master key 流量，先调高阈值并推动收敛，收敛后回 0。
+- **无 OKActions**：绊线语义下恢复通知无价值，且可被利用制造 ALARM/OK 乒乓淹没通道。稀疏指标下告警回 OK 需等数据点滑出评估回看范围（约 25 分钟），属 CloudWatch 既定行为。
+
+> 前提：账号已开 CloudTrail(管理事件)与 GuardDuty。本栈依赖 monitoring 栈导出的 `NotifierFunctionArn`/`AlertTopicArn`，deploy-ops.sh 会按 monitoring→waf→security→flowlogs 顺序部署。
 
 ## CloudTrail 取证（ops/security/，master key 泄露溯源）
 
@@ -223,7 +246,7 @@ aws athena start-query-execution --region us-east-1 \
 
 `04-flowlogs.yaml` 部署：
 - VPC Flow Logs（全流量，自定义字段含 `pkt-srcaddr/flow-direction/traffic-path`）→ 专用 S3 桶 `${ProjectName}-ops-flowlogs-<acct>`（加密+PAB+生命周期）
-- **NAT 出站字节量异常检测告警**（`AWS/NATGateway BytesOutToDestination` 异常带宽）→ 飞书：数据外泄的**实时**信号，复用 NAT 原生指标，零额外采集成本
+- **NAT 出站字节量异常检测告警**（`AWS/NATGateway BytesOutToDestination` 异常带宽，`NatEgressAnomalyStdev` 默认 6σ，见告警清单说明）→ 飞书：数据外泄的**实时**信号，复用 NAT 原生指标，零额外采集成本
 
 建取证表（Flow Logs 到 S3 有 ~10 分钟延迟）：
 ```bash
