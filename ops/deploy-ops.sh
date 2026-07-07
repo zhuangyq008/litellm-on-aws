@@ -40,6 +40,9 @@ LATENCY_P95_THRESHOLD="${LATENCY_P95_THRESHOLD:-45}"
 REQUEST_ANOMALY_STDEV="${REQUEST_ANOMALY_STDEV:-3}"
 NAT_EGRESS_ANOMALY_STDEV="${NAT_EGRESS_ANOMALY_STDEV:-6}"
 MASTER_KEY_USAGE_THRESHOLD="${MASTER_KEY_USAGE_THRESHOLD:-0}"
+MONTHLY_BUDGET_USD="${MONTHLY_BUDGET_USD:-5000}"
+COST_ANOMALY_THRESHOLD_USD="${COST_ANOMALY_THRESHOLD_USD:-100}"
+EXISTING_ANOMALY_MONITOR_ARN="${EXISTING_ANOMALY_MONITOR_ARN:-}"
 ALLOWED_COUNTRIES="${ALLOWED_COUNTRIES:-CN}"
 TARGET_GROUP_FULL_NAME="${TARGET_GROUP_FULL_NAME:-}"
 
@@ -52,6 +55,7 @@ MON_STACK="${PROJECT_NAME}-ops-monitoring"
 WAF_STACK="${PROJECT_NAME}-ops-waf"
 SEC_STACK="${PROJECT_NAME}-ops-security"
 FL_STACK="${PROJECT_NAME}-ops-flowlogs"
+COST_STACK="${PROJECT_NAME}-ops-cost"
 GUARDDUTY_SEVERITY="${GUARDDUTY_SEVERITY:-4}"
 MASTER_KEY_PATTERN="${MASTER_KEY_PATTERN:-*master-key*}"
 
@@ -164,6 +168,18 @@ aws cloudformation deploy \
     "NatGatewayId2=${NATS[1]:-}" \
     "NatEgressAnomalyStdev=${NAT_EGRESS_ANOMALY_STDEV}"
 
+# ========== Step 5: 成本告警（Budgets + Cost Anomaly Detection）==========
+log "部署 ${COST_STACK}"
+aws cloudformation deploy \
+  --template-file "${SCRIPT_DIR}/cfn/05-cost.yaml" \
+  --stack-name "$COST_STACK" \
+  --region "$REGION" \
+  --parameter-overrides \
+    "ProjectName=${PROJECT_NAME}" \
+    "MonthlyBudgetAmount=${MONTHLY_BUDGET_USD}" \
+    "CostAnomalyThresholdUsd=${COST_ANOMALY_THRESHOLD_USD}" \
+    "ExistingAnomalyMonitorArn=${EXISTING_ANOMALY_MONITOR_ARN}"
+
 # ========== 输出 ==========
 DASH_URL="https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${PROJECT_NAME}-ops"
 echo ""
@@ -174,8 +190,10 @@ log " Dashboard:  ${DASH_URL}"
 log " WAF WebACL: ${PROJECT_NAME}-ops-acl (已关联 ALB)"
 log " 安全告警:   GuardDuty(sev>=${GUARDDUTY_SEVERITY}) / master key 读取 / root 登录 → 飞书"
 log " Flow Logs:  VPC→S3 取证 + NAT 出站异常告警(建表: ops/security/setup-flowlogs-athena.sh)"
+log " 成本告警:   月度预算 \$${MONTHLY_BUDGET_USD}(实际80%/预测100%) + 费用异常(≥\$${COST_ANOMALY_THRESHOLD_USD}) → 飞书"
 log "========================================="
-log "卸载：aws cloudformation delete-stack --stack-name ${FL_STACK} --region ${REGION}"
+log "卸载：aws cloudformation delete-stack --stack-name ${COST_STACK} --region ${REGION}"
+log "      aws cloudformation delete-stack --stack-name ${FL_STACK} --region ${REGION}"
 log "      aws cloudformation delete-stack --stack-name ${SEC_STACK} --region ${REGION}"
 log "      aws cloudformation delete-stack --stack-name ${WAF_STACK} --region ${REGION}"
 log "      aws cloudformation delete-stack --stack-name ${MON_STACK} --region ${REGION}"

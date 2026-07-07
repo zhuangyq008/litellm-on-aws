@@ -25,11 +25,12 @@
                         └──────────────────────────────► 飞书/钉钉/企业微信群
 ```
 
-四个独立栈（deploy-ops.sh 按序部署）：
+五个独立栈（deploy-ops.sh 按序部署）：
 - `litellm-gw-ops-monitoring` — SNS + 通知 Lambda + CloudWatch 告警 + Dashboard
 - `litellm-gw-ops-waf` — Regional WebACL + IPSet + 规则 + 日志 + ALB 关联 + WAF 告警
 - `litellm-gw-ops-security` — 安全事件告警（GuardDuty / 密钥读取 / root 登录 / **master key 使用**）
 - `litellm-gw-ops-flowlogs` — VPC Flow Logs 取证落盘 + NAT 出站流量异常告警
+- `litellm-gw-ops-cost` — 成本告警（Budgets 月度预算 + Cost Anomaly Detection → 飞书）
 
 ---
 
@@ -55,6 +56,7 @@ bash ops/deploy-ops.sh
 ### 卸载
 
 ```bash
+aws cloudformation delete-stack --stack-name litellm-gw-ops-cost       --region us-east-1
 aws cloudformation delete-stack --stack-name litellm-gw-ops-flowlogs   --region us-east-1
 aws cloudformation delete-stack --stack-name litellm-gw-ops-security   --region us-east-1
 aws cloudformation delete-stack --stack-name litellm-gw-ops-waf        --region us-east-1
@@ -260,6 +262,22 @@ bash ops/security/setup-flowlogs-athena.sh   # 建 litellm_gw_security.vpc_flow_
 | `flow-03-egress-by-eni.sql` | 按 ENI 的出站字节——定位哪个容器外传最多 |
 
 > GuardDuty 现状(本账号)：`FLOW_LOGS/DNS/CLOUDTRAIL/S3/RDS_LOGIN/RUNTIME_MONITORING` 均已启用；`litellm-gw-cluster` 的 ECS Runtime 覆盖为 HEALTHY。网络威胁检测已实时工作，自建 Flow Logs 补的是取证广度与 NAT 出站量告警。
+
+## 成本告警（05-cost 栈）
+
+把「对账才发现费用异常」这条兜底通道自动化，与 master key 绊线告警（分钟级）、LiteLLM per-key budget（损失上限）构成成本维度三层：
+
+| 能力 | 定义 | 参数 |
+|---|---|---|
+| 月度预算-实际 | 实际花费 > 预算 80% 告警 | `MONTHLY_BUDGET_USD` |
+| 月度预算-预测 | **预测**月底花费 > 预算 100% 告警（比实际超支早数天）| 同上 |
+| 费用异常检测 | 按服务维度机器学习基线，异常影响 ≥ 阈值即推送（IMMEDIATE 直推 SNS）| `COST_ANOMALY_THRESHOLD_USD` |
+
+注意事项：
+- **每账号仅允许一个按服务维度(DIMENSIONAL)的异常监控器**。若账号已有（`aws ce get-anomaly-monitors`），必须把其 ARN 填入 `EXISTING_ANOMALY_MONITOR_ARN` 复用，否则栈创建失败；留空则新建。
+- 本栈包含该 SNS 主题的 **TopicPolicy**（授权 `budgets.amazonaws.com`/`costalerts.amazonaws.com` 发布；管理类动作收敛到账号 root 主体防告警压制）。TopicPolicy 整体替换主题策略，本栈是唯一管理点，其他栈勿再建。
+- 通知 Lambda 已支持三种消息形态：CloudWatch 告警 JSON / Budgets 纯文本 / CAD 异常 JSON（费用卡片含异常金额、Top 根因服务、时段）。
+- CAD 评估粒度为天级；分钟级的滥用发现靠 master key 绊线与 4XX/请求量告警，CAD 是金额维度的兜底。
 
 ## 部署前安全门禁
 

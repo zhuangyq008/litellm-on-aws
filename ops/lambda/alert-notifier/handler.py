@@ -23,20 +23,57 @@ SECRET_ARN = os.environ["WEBHOOK_SECRET_ARN"]
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 _secrets_client = boto3.client("secretsmanager", region_name=REGION)
-_cache = {}  # 冷启动缓存 secret
+_cache = {}  # 缓存 secret，带 TTL
+_CACHE_TTL_SECONDS = 300
 
 
 def _get_webhook_config():
-    """从 Secrets Manager 读取 {webhook_url, sign_secret}，缓存于容器生命周期内。"""
-    if "cfg" not in _cache:
+    """从 Secrets Manager 读取 {webhook_url, sign_secret}。
+    TTL 5 分钟：webhook/加签密钥轮换后长活容器不至于拿旧值静默失效。"""
+    now = time.time()
+    if "cfg" not in _cache or now - _cache.get("ts", 0) > _CACHE_TTL_SECONDS:
         raw = _secrets_client.get_secret_value(SecretId=SECRET_ARN)["SecretString"]
         _cache["cfg"] = json.loads(raw)
+        _cache["ts"] = now
     return _cache["cfg"]
 
 
 def _parse_sns(record):
-    """解析 CloudWatch Alarm -> SNS 的消息体，归一化为 (title, lines[], color)。"""
-    return _alarm_to_msg(json.loads(record["Sns"]["Message"]))
+    """解析 SNS 消息体，归一化为 (title, lines[], color)。
+    按形态分派：CloudWatch Alarm(JSON 带 AlarmName) / Cost Anomaly Detection(JSON 带
+    anomalyId) / AWS Budgets(纯文本) / 其他 JSON(通用兜底)。"""
+    sns = record["Sns"]
+    raw = sns.get("Message", "")
+    try:
+        msg = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        # AWS Budgets 等服务发纯文本通知，取 SNS Subject 作标题
+        title = sns.get("Subject") or "AWS 通知"
+        return title, [raw[:1500] or "-"], "orange"
+    if isinstance(msg, dict) and "AlarmName" in msg:
+        return _alarm_to_msg(msg)
+    if isinstance(msg, dict) and "anomalyId" in msg:
+        return _anomaly_to_msg(msg)
+    title = sns.get("Subject") or "AWS 通知"
+    return title, [raw[:1500]], "orange"
+
+
+def _anomaly_to_msg(msg):
+    """Cost Anomaly Detection → SNS(IMMEDIATE) 的异常 JSON 归一化为消息卡片。"""
+    impact = msg.get("impact") or {}
+    causes = (msg.get("rootCauses") or [])[:3]
+    cause_strs = [
+        f"{c.get('service', '-')} / {c.get('region', '-')} / {c.get('usageType', '-')}"
+        for c in causes
+    ] or ["-"]
+    lines = [
+        f"**异常费用**：${impact.get('totalImpact', '-')}"
+        f"（实际 ${impact.get('totalActualSpend', '-')} vs 预期 ${impact.get('totalExpectedSpend', '-')}）",
+        f"**根因(Top3)**：{'；'.join(cause_strs)}",
+        f"**时段**：{msg.get('anomalyStartDate', '-')} ~ {msg.get('anomalyEndDate', '-')}",
+        f"**详情**：{msg.get('anomalyDetailsLink', '-')}",
+    ]
+    return "[COST] 费用异常检测", lines, "red"
 
 
 def _alarm_to_msg(msg):

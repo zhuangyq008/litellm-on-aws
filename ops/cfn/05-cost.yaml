@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  LiteLLM Gateway - Ops 独立模块 (5): 成本告警。
+  AWS Budgets(月度预算, 实际80%+预测100%两档) + Cost Anomaly Detection(按服务维度,
+  IMMEDIATE 直推 SNS) → 复用 monitoring 栈的 SNS→飞书通道。
+  把"对账才发现"这条兜底通道自动化到天级(CAD 每日评估粒度)。
+  依赖：monitoring 栈已部署(导出 AlertTopicArn)。
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+    AllowedPattern: "^[a-z][a-z0-9-]{1,30}$"
+  MonthlyBudgetAmount:
+    Type: Number
+    Default: 5000
+    MinValue: 1
+    Description: 月度成本预算（USD）。客户按自身规模填写；实际花费超 80% / 预测超 100% 各告警一次
+  CostAnomalyThresholdUsd:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    Description: Cost Anomaly Detection 告警的最低异常影响金额（USD，绝对值）
+  ExistingAnomalyMonitorArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^(arn:aws:ce::[0-9]{12}:anomalymonitor/[a-f0-9-]+)?$"
+    Description: >
+      已存在的 DIMENSIONAL 异常监控器 ARN（可选）。每账号仅允许一个按服务维度的
+      monitor——若账号已有（aws ce get-anomaly-monitors 查询），必须填入复用，
+      否则本栈创建会失败；留空则新建。
+
+Conditions:
+  CreateMonitor: !Equals [!Ref ExistingAnomalyMonitorArn, ""]
+
+Resources:
+  # ---- SNS 主题策略：授权 Budgets 与 Cost Anomaly Detection 服务主体发布 ----
+  # 注意：TopicPolicy 会整体替换主题策略，故须包含等效默认语句（账号内主体全权限,
+  # CloudWatch 告警走这条），否则现有告警投递会断。本栈是该主题策略的唯一管理点。
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # 管理类动作仅限账号根主体——不随普通 IAM 用户的宽泛 SNS 权限扩散，
+          # 防止被攻破的开发者身份 SetTopicAttributes 改策略/DeleteTopic 压制告警通道
+          - Sid: AdminRootOnly
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action:
+              - sns:SetTopicAttributes
+              - sns:AddPermission
+              - sns:RemovePermission
+              - sns:DeleteTopic
+            Resource: !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+          - Sid: AccountPublishSubscribe
+            Effect: Allow
+            Principal: { AWS: "*" }
+            Action:
+              - sns:Publish
+              - sns:Subscribe
+              - sns:GetTopicAttributes
+              - sns:ListSubscriptionsByTopic
+              - sns:Receive
+            Resource: !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+            Condition:
+              StringEquals:
+                AWS:SourceOwner: !Ref AWS::AccountId
+          - Sid: AllowBudgetsPublish
+            Effect: Allow
+            Principal: { Service: budgets.amazonaws.com }
+            Action: sns:Publish
+            Resource: !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub "arn:aws:budgets::${AWS::AccountId}:budget/${ProjectName}-ops-monthly-cost"
+          - Sid: AllowCostAnomalyPublish
+            Effect: Allow
+            Principal: { Service: costalerts.amazonaws.com }
+            Action: sns:Publish
+            Resource: !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # ---- 月度预算：实际超 80% 预警 + 预测超 100% 提前告警 ----
+  # FORECASTED 档是关键：在"照当前烧法月底会超"时提前数天告警，早于实际超支。
+  MonthlyCostBudget:
+    Type: AWS::Budgets::Budget
+    DependsOn: AlertTopicPolicy  # Budgets 创建时校验 SNS 发布权限，策略须先就位
+    Properties:
+      Budget:
+        BudgetName: !Sub "${ProjectName}-ops-monthly-cost"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetAmount
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+
+  # ---- 费用异常检测：按服务维度建基线，异常影响 ≥ 阈值即推送 ----
+  CostAnomalyMonitor:
+    Type: AWS::CE::AnomalyMonitor
+    Condition: CreateMonitor
+    Properties:
+      MonitorName: !Sub "${ProjectName}-ops-service-monitor"
+      MonitorType: DIMENSIONAL
+      MonitorDimension: SERVICE
+
+  CostAnomalySubscription:
+    Type: AWS::CE::AnomalySubscription
+    DependsOn: AlertTopicPolicy
+    Properties:
+      SubscriptionName: !Sub "${ProjectName}-ops-cost-anomaly"
+      MonitorArnList:
+        - !If [CreateMonitor, !GetAtt CostAnomalyMonitor.MonitorArn, !Ref ExistingAnomalyMonitorArn]
+      # SNS 订阅者仅支持 IMMEDIATE 频率（DAILY/WEEKLY 只能发邮件）
+      Frequency: IMMEDIATE
+      Subscribers:
+        - Type: SNS
+          Address: !ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }
+      ThresholdExpression: !Sub >-
+        {"Dimensions": {"Key": "ANOMALY_TOTAL_IMPACT_ABSOLUTE",
+        "Values": ["${CostAnomalyThresholdUsd}"],
+        "MatchOptions": ["GREATER_THAN_OR_EQUAL"]}}
+
+Outputs:
+  BudgetName:
+    Value: !Sub "${ProjectName}-ops-monthly-cost"
+  AnomalySubscriptionArn:
+    Value: !GetAtt CostAnomalySubscription.SubscriptionArn
