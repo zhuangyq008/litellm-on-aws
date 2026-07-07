@@ -79,6 +79,54 @@ class TestHandler:
         assert body["processed"] == 0
         mock_s3.put_object.assert_not_called()
 
+    def _make_event(self, metadata_str: str) -> dict:
+        return {
+            "Records": [
+                {
+                    "eventName": "INSERT",
+                    "dynamodb": {
+                        "NewImage": {
+                            "id": {"S": "req-001"},
+                            "startTime": {"S": "2026-04-20 10:30:00.000000"},
+                            "call_type": {"S": "acompletion"},
+                            "model": {"S": "claude-opus-4-6"},
+                            "metadata": {"S": metadata_str},
+                        }
+                    },
+                }
+            ]
+        }
+
+    def test_master_key_usage_emits_emf_metric(self, capsys):
+        from handler import handler
+
+        # key_alias 为空 = master key（与审计湖/QuickSight 口径一致）
+        event = self._make_event(str({"user_api_key_hash": "abc123"}))
+        with patch("handler.s3", MagicMock()):
+            handler(event, None)
+
+        emf_lines = [
+            json.loads(line)
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith("{") and "_aws" in line
+        ]
+        assert len(emf_lines) == 1
+        emf = emf_lines[0]
+        assert emf["MasterKeyRequests"] == 1
+        metric_def = emf["_aws"]["CloudWatchMetrics"][0]
+        assert metric_def["Namespace"] == "litellm-gw/audit"
+        assert metric_def["Metrics"] == [{"Name": "MasterKeyRequests", "Unit": "Count"}]
+
+    def test_virtual_key_does_not_emit_emf_metric(self, capsys):
+        from handler import handler
+
+        event = self._make_event(str({"user_api_key_alias": "alice-dev", "user_api_key_hash": "abc123"}))
+        with patch("handler.s3", MagicMock()):
+            handler(event, None)
+
+        emf_lines = [line for line in capsys.readouterr().out.splitlines() if "_aws" in line]
+        assert emf_lines == []
+
     def test_writes_errors_to_error_prefix(self):
         from handler import handler
 

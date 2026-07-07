@@ -9,6 +9,7 @@ Parameters:
   ProjectName:
     Type: String
     Default: litellm-gw
+    AllowedPattern: "^[a-z][a-z0-9-]{1,30}$"
   GuardDutySeverityThreshold:
     Type: Number
     Default: 4
@@ -18,6 +19,14 @@ Parameters:
     Default: "*master-key*"
     AllowedPattern: "^[a-zA-Z0-9_\\-/*]+$"
     Description: master key 密钥名/ARN 的通配匹配（用于捕获 GetSecretValue；限 glob 安全字符）
+  MasterKeyUsageThreshold:
+    Type: Number
+    Default: 0
+    Description: >
+      5 分钟内 master key 调用 LLM API 的请求数超过该值即告警（0=只要使用就告警）。
+      指标由 stream-processor Lambda 以 EMF 打出（key_alias 为空 = master key，
+      与审计湖/QuickSight 口径一致）。日常应全部使用 virtual key；
+      若现阶段仍有合法 master key 流量，先调高该值并尽快收敛，收敛后回调为 0 作零噪声绊线。
 
 Resources:
   # ---- GuardDuty 发现（sev≥阈值）----
@@ -136,6 +145,26 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt RootLoginRule.Arn
+
+  # ---- master key 使用告警（泄露滥用实时信号）----
+  # 指标来源：stream-processor Lambda 对 key_alias 为空的审计记录打 EMF 指标。
+  # 攻击者拿泄露的 master key 调 API 不触碰 AWS 控制面，SecretRead 规则抓不到；
+  # 这条告警直接盯"master key 被用于 LLM 调用"本身。走 SNS（notifier Lambda 的告警入口）。
+  MasterKeyUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-master-key-usage"
+      AlarmDescription: "master key 正在被调用 LLM API（日常应使用 virtual key；若非预期操作，视为泄露滥用，立即轮换 master key 并按 runbook 溯源）"
+      Namespace: !Sub "${ProjectName}/audit"
+      MetricName: MasterKeyRequests
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref MasterKeyUsageThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      # 绊线语义（有使用即异常）不配 OKActions —— 攻击者每窗口少量请求会制造 ALARM/OK 乒乓淹没通道
+      AlarmActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
 
 Outputs:
   GuardDutyRuleArn:

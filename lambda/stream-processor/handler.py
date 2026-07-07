@@ -14,6 +14,24 @@ logger.setLevel(logging.INFO)
 s3 = boto3.client("s3")
 
 BUCKET = os.environ.get("AUDIT_BUCKET", "")
+PROJECT_NAME = os.environ.get("PROJECT_NAME", "litellm-gw")
+
+
+def _emit_master_key_metric(count: int) -> None:
+    # EMF：由 CloudWatch Logs 异步提取为指标，无需 IAM 变更/额外 API 调用。
+    # 告警建在 ops 03-security 栈（{ProjectName}-ops-master-key-usage）。
+    # 必须走 print 而非 logger —— Lambda logger 的前缀会破坏 EMF 解析。
+    print(json.dumps({
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [{
+                "Namespace": f"{PROJECT_NAME}/audit",
+                "Dimensions": [[]],
+                "Metrics": [{"Name": "MasterKeyRequests", "Unit": "Count"}],
+            }],
+        },
+        "MasterKeyRequests": count,
+    }))
 
 
 def _s3_key(prefix: str, start_time_str: str) -> str:
@@ -30,6 +48,7 @@ def handler(event: dict, context) -> dict:
     records = event.get("Records", [])
     processed_lines: list[str] = []
     error_lines: list[str] = []
+    master_key_count = 0
 
     for record in records:
         if record.get("eventName") not in ("INSERT", "MODIFY"):
@@ -41,6 +60,9 @@ def handler(event: dict, context) -> dict:
             transformed = transform_record(new_image)
             if not transformed.get("id") or not transformed.get("start_time"):
                 raise ValueError("Record missing required fields")
+            # key_alias 为空 = master key（与审计湖/QuickSight key_type 口径一致）
+            if not transformed.get("key_alias"):
+                master_key_count += 1
             processed_lines.append(json.dumps(transformed, ensure_ascii=False))
         except Exception as e:
             logger.error(f"Failed to transform record: {e}")
@@ -63,6 +85,9 @@ def handler(event: dict, context) -> dict:
         body = "\n".join(processed_lines)
         s3.put_object(Bucket=BUCKET, Key=key, Body=body, ContentType="application/json")
         logger.info(f"Wrote {len(processed_lines)} records to s3://{BUCKET}/{key}")
+
+    if master_key_count:
+        _emit_master_key_metric(master_key_count)
 
     if error_lines:
         key = _s3_key("errors", start_time)

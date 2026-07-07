@@ -38,6 +38,8 @@ HTTP_4XX_THRESHOLD="${HTTP_4XX_THRESHOLD:-1000}"
 HTTP_5XX_THRESHOLD="${HTTP_5XX_THRESHOLD:-25}"
 LATENCY_P95_THRESHOLD="${LATENCY_P95_THRESHOLD:-45}"
 REQUEST_ANOMALY_STDEV="${REQUEST_ANOMALY_STDEV:-3}"
+NAT_EGRESS_ANOMALY_STDEV="${NAT_EGRESS_ANOMALY_STDEV:-6}"
+MASTER_KEY_USAGE_THRESHOLD="${MASTER_KEY_USAGE_THRESHOLD:-0}"
 ALLOWED_COUNTRIES="${ALLOWED_COUNTRIES:-CN}"
 TARGET_GROUP_FULL_NAME="${TARGET_GROUP_FULL_NAME:-}"
 
@@ -141,7 +143,8 @@ aws cloudformation deploy \
   --parameter-overrides \
     "ProjectName=${PROJECT_NAME}" \
     "GuardDutySeverityThreshold=${GUARDDUTY_SEVERITY}" \
-    "MasterKeyNamePattern=${MASTER_KEY_PATTERN}"
+    "MasterKeyNamePattern=${MASTER_KEY_PATTERN}" \
+    "MasterKeyUsageThreshold=${MASTER_KEY_USAGE_THRESHOLD}"
 
 # ========== Step 4: VPC Flow Logs → S3 取证 + NAT 出站异常告警 ==========
 VPCID="$(aws cloudformation list-exports --region "$REGION" \
@@ -158,7 +161,8 @@ aws cloudformation deploy \
   --parameter-overrides \
     "ProjectName=${PROJECT_NAME}" \
     "NatGatewayId1=${NATS[0]:-}" \
-    "NatGatewayId2=${NATS[1]:-}"
+    "NatGatewayId2=${NATS[1]:-}" \
+    "NatEgressAnomalyStdev=${NAT_EGRESS_ANOMALY_STDEV}"
 
 # ========== 输出 ==========
 DASH_URL="https://${REGION}.console.aws.amazon.com/cloudwatch/home?region=${REGION}#dashboards:name=${PROJECT_NAME}-ops"

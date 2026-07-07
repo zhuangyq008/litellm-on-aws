@@ -9,6 +9,7 @@ Parameters:
   ProjectName:
     Type: String
     Default: litellm-gw
+    AllowedPattern: "^[a-z][a-z0-9-]{1,30}$"
   RetentionDays:
     Type: Number
     Default: 90
@@ -26,6 +27,15 @@ Parameters:
     Type: String
     Default: ""
     Description: NAT 网关 2（可选）
+  NatEgressAnomalyStdev:
+    Type: Number
+    Default: 6
+    MinValue: 1
+    MaxValue: 20
+    Description: >
+      NAT 出站字节异常检测带宽（标准差，越大越不敏感）。
+      2000+ 员工爬坡期出站流量增长快，模型基线偏低易误报，故默认 6；
+      客户上线稳定后可按实际基线回调（真实数据外泄通常远超基线多倍，6 仍可捕获）。
 
 Conditions:
   HasNat1: !Not [!Equals [!Ref NatGatewayId1, ""]]
@@ -118,7 +128,7 @@ Resources:
             Stat: Sum
           ReturnData: true
         - Id: ad1
-          Expression: "ANOMALY_DETECTION_BAND(m1, 3)"
+          Expression: !Sub "ANOMALY_DETECTION_BAND(m1, ${NatEgressAnomalyStdev})"
           Label: "egress bytes (expected)"
           ReturnData: true
 
@@ -147,7 +157,7 @@ Resources:
             Stat: Sum
           ReturnData: true
         - Id: ad1
-          Expression: "ANOMALY_DETECTION_BAND(m1, 3)"
+          Expression: !Sub "ANOMALY_DETECTION_BAND(m1, ${NatEgressAnomalyStdev})"
           Label: "egress bytes (expected)"
           ReturnData: true
 
