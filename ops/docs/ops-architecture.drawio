@@ -1,0 +1,237 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.7.7">
+  <diagram id="ops-arch" name="LiteLLM-GW Ops 架构">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1450" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ======== 标题 ======== -->
+        <mxCell id="title" value="LiteLLM Gateway — Ops 运维加固模块架构（5 个独立栈：monitoring / waf / security / flowlogs / cost，与主栈解耦、只读引用导出）" style="text;html=1;align=left;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="30" y="4" width="1400" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ======== 分层背景带 ======== -->
+        <mxCell id="band1" value="① 接入与边缘防护层 — Global Accelerator + WAF（litellm-gw-ops-waf）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fontSize=14;fontStyle=1;spacingLeft=12;spacingTop=4;fillColor=#FCF2E8;strokeColor=#D79B00;fontColor=#8F5B00;" vertex="1" parent="1">
+          <mxGeometry x="20" y="40" width="1660" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="band2" value="② 网关本体层 — 主栈上下文（Ops 模块只读引用 ALBArn/ECSCluster/Service 导出，不修改主栈资源）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fontSize=14;fontStyle=1;spacingLeft=12;spacingTop=4;fillColor=#F5F5F5;strokeColor=#999999;fontColor=#555555;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="20" y="300" width="1660" height="275" as="geometry" />
+        </mxCell>
+        <mxCell id="band3" value="③ 监控·告警·通知层（litellm-gw-ops-monitoring + master key 使用绊线）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fontSize=14;fontStyle=1;spacingLeft=12;spacingTop=4;fillColor=#FCE8F1;strokeColor=#E7157B;fontColor=#9C0F52;" vertex="1" parent="1">
+          <mxGeometry x="20" y="590" width="1660" height="285" as="geometry" />
+        </mxCell>
+        <mxCell id="band4" value="④ 安全事件与取证层（litellm-gw-ops-security / litellm-gw-ops-flowlogs + CloudTrail·Athena 溯源）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fontSize=14;fontStyle=1;spacingLeft=12;spacingTop=4;fillColor=#FBEAEC;strokeColor=#DD344C;fontColor=#96222F;" vertex="1" parent="1">
+          <mxGeometry x="20" y="890" width="1660" height="305" as="geometry" />
+        </mxCell>
+        <mxCell id="band5" value="⑤ 成本治理层（litellm-gw-ops-cost）" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=left;fontSize=14;fontStyle=1;spacingLeft=12;spacingTop=4;fillColor=#EFF5E5;strokeColor=#7AA116;fontColor=#4A6510;" vertex="1" parent="1">
+          <mxGeometry x="20" y="1210" width="1660" height="180" as="geometry" />
+        </mxCell>
+
+        <!-- ======== ① 接入与边缘防护 ======== -->
+        <mxCell id="user" value="员工 2000+ / Claude Code" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3E;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.users;" vertex="1" parent="1">
+          <mxGeometry x="70" y="120" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="ga" value="Global Accelerator&#10;静态 IP ×2" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.global_accelerator;" vertex="1" parent="1">
+          <mxGeometry x="280" y="120" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="waf" value="AWS WAF&#10;WebACL litellm-gw-ops-acl" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf;" vertex="1" parent="1">
+          <mxGeometry x="480" y="120" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="alb" value="ALB (HTTPS:443, ACM)&#10;aigw.enginez.link" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing;" vertex="1" parent="1">
+          <mxGeometry x="680" y="120" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="wafrules" value="WebACL 规则（优先级从高到低）&#10;P5&amp;nbsp;&amp;nbsp; Geo 白名单（可选开关）&#10;P10-12 AWS 托管组：Common* / KnownBadInputs / IpReputation&#10;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;*SizeRestrictions/GenericLFI/XSS_BODY 已 override=Count（防误伤 Claude Code 大 body/路径/代码）&#10;P20&amp;nbsp; 管理路径锁定 /key /config /ui /spend…（开关，待客户运维出口 IP）&#10;P30/31 按 API-key 限速 3000/5min（Authorization + x-api-key 头聚合，防单 key 被刷）&#10;P32&amp;nbsp; 按 IP 限速 20000/5min（DoS 兜底，2000 人共享出口 NAT 不能按 IP 主限）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DD344C;align=left;verticalAlign=top;fontSize=11;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="870" y="85" width="500" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="waflogs" value="CloudWatch Logs&#10;aws-waf-logs-*（脱敏 key 头）" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch_2;" vertex="1" parent="1">
+          <mxGeometry x="1450" y="120" width="68" height="68" as="geometry" />
+        </mxCell>
+
+        <!-- ======== ② 网关本体（主栈上下文） ======== -->
+        <mxCell id="vpc" value="VPC 10.0.0.0/16" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#8C4FFF;verticalAlign=top;align=left;fontColor=#8C4FFF;fontSize=12;fontStyle=1;spacingLeft=8;spacingTop=2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="345" width="760" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="ecs" value="ECS Fargate&#10;LiteLLM Proxy ×2 task" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fargate;" vertex="1" parent="1">
+          <mxGeometry x="130" y="415" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="bedrock" value="Bedrock Runtime&#10;VPC Endpoint (PrivateDNS)" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#01A88D;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" vertex="1" parent="1">
+          <mxGeometry x="370" y="415" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="nat" value="NAT Gateway ×2" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.nat_gateway;" vertex="1" parent="1">
+          <mxGeometry x="610" y="415" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="ddb" value="DynamoDB 审计表&#10;（LiteLLM 请求流水）" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#C925D1;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" vertex="1" parent="1">
+          <mxGeometry x="920" y="415" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="streamproc" value="stream-processor Lambda&#10;（主仓）解析 key 身份" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="415" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="emfnote" value="key_alias 为空 = master key&#10;→ EMF 打指标 litellm-gw/audit&#10;MasterKeyRequests&#10;（零 IAM 变更 / 零 API 调用，走日志通道）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B3B3B3;align=left;verticalAlign=top;fontSize=11;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="1330" y="400" width="320" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ======== ③ 监控·告警·通知 ======== -->
+        <mxCell id="cwalarms" value="CloudWatch&#10;告警 + Dashboard" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch_2;" vertex="1" parent="1">
+          <mxGeometry x="100" y="690" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="alarmlist" value="告警清单（全部 → SNS）：&#10;• 请求量异常检测 3σ×2 周期&#10;• Target 4XX &gt; 1000/5min（撞库信号，特意用 Target 而非 ELB 指标）&#10;• Target 5XX &gt; 25/5min ｜ p95 延迟 &gt; 45s&#10;• ECS CPU / 内存 &gt; 85% ｜ RunningTask &lt; 期望 ｜ 不健康目标&#10;• WAF BlockedRequests &gt; 200/5min（waf 栈）&#10;• master key 使用 &gt; 0 —— 绊线告警，无 OKActions（security 栈）&#10;• NAT 出站字节异常检测 6σ（flowlogs 栈）&#10;+ Dashboard litellm-gw-ops" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E7157B;align=left;verticalAlign=top;fontSize=11;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="210" y="635" width="420" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="sns" value="SNS&#10;litellm-gw-ops-alerts" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.simple_notification_service;" vertex="1" parent="1">
+          <mxGeometry x="700" y="690" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="notifier" value="alert-notifier Lambda&#10;三形态解析+消息卡片+加签" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="950" y="690" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="secret" value="Secrets Manager&#10;litellm-gw-ops-im-webhook" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.secrets_manager;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="770" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="feishu" value="飞书 / 钉钉 / 企业微信&#10;群机器人（加签 webhook）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1380" y="695" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="snsnote" value="SNS 无 KMS 加密（既定决策：&#10;CloudWatch 告警主体无权用&#10;aws/sns 托管密钥，会静默丢投递）" style="text;html=1;align=left;verticalAlign=top;fontSize=10;fontColor=#777777;" vertex="1" parent="1">
+          <mxGeometry x="660" y="790" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ======== ④ 安全事件与取证 ======== -->
+        <mxCell id="guardduty" value="GuardDuty&#10;（全量 + ECS Runtime）" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#DD344C;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.guardduty;" vertex="1" parent="1">
+          <mxGeometry x="100" y="965" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="cloudtrail" value="CloudTrail&#10;管理事件" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudtrail;" vertex="1" parent="1">
+          <mxGeometry x="310" y="965" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="eventbridge" value="EventBridge&#10;3 条规则" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eventbridge;" vertex="1" parent="1">
+          <mxGeometry x="530" y="965" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="ebrules" value="规则：GuardDuty 发现 sev≥4 ｜ master key 密钥被读&#10;（GetSecretValue 命中 *master-key*）｜ root 控制台登录&#10;→ Input Transformer 塑形后直调通知 Lambda（不经 SNS）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DD344C;align=left;verticalAlign=top;fontSize=11;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="440" y="1090" width="360" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="flowlogs" value="VPC Flow Logs&#10;全流量+自定义字段" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.flow_logs;" vertex="1" parent="1">
+          <mxGeometry x="880" y="965" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="s3flow" value="S3 flowlogs 桶&#10;（加密+PAB+生命周期）" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="965" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="s3trail" value="S3 CloudTrail 桶" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="1070" y="1095" width="60" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="athena" value="Athena&#10;litellm_gw_security&#10;（分区投影，免 MSCK）" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#8C4FFF;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.athena;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="1020" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="queries" value="取证 SQL（ops/security/queries/）&#10;01 谁读了 master key（时间/主体/IP/UA）&#10;02 排除 ECS 角色的可疑读取&#10;03 敏感管理 API 写操作&#10;04 root/失败/无 MFA 登录&#10;05 IAM 凭证生命周期&#10;flow-01 出站 TopN ｜ flow-02 REJECT&#10;flow-03 按 ENI 出站字节" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#8C4FFF;align=left;verticalAlign=top;fontSize=11;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="1420" y="945" width="240" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="natalarm" value="NAT 出站异常告警&#10;BytesOut 6σ 异常带" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#E7157B;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch_2;" vertex="1" parent="1">
+          <mxGeometry x="880" y="1095" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ======== ⑤ 成本治理 ======== -->
+        <mxCell id="budgets" value="AWS Budgets 月度预算&#10;实际&gt;80% / 预测&gt;100%" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.budgets;" vertex="1" parent="1">
+          <mxGeometry x="160" y="1265" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="cad" value="Cost Anomaly Detection&#10;按服务 ≥$100，IMMEDIATE 直推" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;fillColor=#7AA116;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cost_explorer;" vertex="1" parent="1">
+          <mxGeometry x="420" y="1265" width="68" height="68" as="geometry" />
+        </mxCell>
+        <mxCell id="costnote" value="TopicPolicy 由本栈唯一管理：授权 budgets/costalerts 发布，管理动作收敛 root 主体（防告警压制）。&#10;成本三层防线：master key 绊线（分钟级）→ LiteLLM per-key budget（损失上限）→ Budgets+CAD（金额兜底，天级）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7AA116;align=left;verticalAlign=top;fontSize=11;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="640" y="1260" width="480" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- ======== 边 ======== -->
+        <mxCell id="e1" value="HTTPS aigw.enginez.link" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="user" target="ga">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="保留真实客户端 IP" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="ga" target="waf">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="放行" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="waf" target="alb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="全量日志" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;dashed=1;strokeColor=#888888;" edge="1" parent="1" source="waf" target="waflogs">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="514" y="70" /><mxPoint x="1484" y="70" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e5" value="转发" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="alb" target="ecs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="模型调用（不出公网）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="ecs" target="bedrock">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="其他出站" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="ecs" target="nat">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="ALB / ECS / WAF 原生指标" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;dashed=1;strokeColor=#888888;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="vpc" target="cwalarms">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="ALARM" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#E7157B;fontColor=#E7157B;fontStyle=1;" edge="1" parent="1" source="alarmlist" target="sns">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="订阅" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="sns" target="notifier">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="读 webhook（5min 缓存）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;dashed=1;strokeColor=#888888;" edge="1" parent="1" source="notifier" target="secret">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="加签消息卡片" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;fontStyle=1;" edge="1" parent="1" source="notifier" target="feishu">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" value="DynamoDB Stream" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="ddb" target="streamproc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="EMF 指标 MasterKeyRequests（绊线）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;dashed=1;strokeColor=#DD344C;fontColor=#DD344C;fontStyle=1;" edge="1" parent="1" source="streamproc" target="alarmlist">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="1194" y="580" /><mxPoint x="420" y="580" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e15" value="发现事件" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="guardduty" target="eventbridge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" value="管理事件" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="cloudtrail" target="eventbridge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" value="塑形后直调（不经 SNS）" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#DD344C;fontColor=#DD344C;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="eventbridge" target="notifier">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="564" y="880" /><mxPoint x="984" y="880" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e18" value="全流量落盘" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;dashed=1;strokeColor=#888888;exitX=0.9;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="vpc" target="flowlogs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e19" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="flowlogs" target="s3flow">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="s3flow" target="athena">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e21" value="落盘" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;dashed=1;strokeColor=#888888;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="cloudtrail" target="s3trail">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="344" y="1180" /><mxPoint x="900" y="1180" /><mxPoint x="1000" y="1125" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e22" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#232F3E;" edge="1" parent="1" source="s3trail" target="athena">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e23" value="BytesOutToDestination" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;dashed=1;strokeColor=#888888;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="nat" target="natalarm">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="644" y="1125" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e24" value="ALARM" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#E7157B;fontColor=#E7157B;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="natalarm" target="sns">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="820" y="1125" /><mxPoint x="820" y="860" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e25" value="通知" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#7AA116;fontColor=#4A6510;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="budgets" target="sns">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="194" y="1230" /><mxPoint x="40" y="1230" /><mxPoint x="40" y="855" /><mxPoint x="680" y="855" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e26" value="通知" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#7AA116;fontColor=#4A6510;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="cad" target="sns">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="454" y="1240" /><mxPoint x="50" y="1240" /><mxPoint x="50" y="865" /><mxPoint x="690" y="865" /></Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

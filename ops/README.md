@@ -14,16 +14,12 @@
 
 ## 架构
 
-```
-                        ┌─ CloudWatch 告警(ALB/ECS 原生指标) ─┐
-                        │                                     ▼
-业务流量 → GA → ALB ──►  WAF(Regional WebACL)            SNS Topic
-                        │  · 管理路径 IP 白名单              │
-                        │  · rate-based 限速                ▼
-                        │  · AWS 托管规则 + 可选 Geo    alert-notifier Lambda
-                        │  · BlockedRequests 告警 ──────────►│
-                        └──────────────────────────────► 飞书/钉钉/企业微信群
-```
+![Ops 架构图](docs/ops-architecture.png)
+
+> 源文件（draw.io 可编辑）：[docs/ops-architecture.drawio](docs/ops-architecture.drawio)
+> ｜ S3 副本：`s3://agentcore-enginez-ue1-poc/litellm-gw/`（drawio + png）
+
+要点：所有 CloudWatch 告警统一走 **SNS → 通知 Lambda → IM 群** 一条链路；唯一例外是 EventBridge 安全事件（**塑形后直调 Lambda，不经 SNS**）。master key 绊线告警的数据链为 DynamoDB Stream → stream-processor（EMF 打指标，零 IAM/零 API）→ CloudWatch 告警，是针对「master key 泄露被滥用」的靶心信号。
 
 五个独立栈（deploy-ops.sh 按序部署）：
 - `litellm-gw-ops-monitoring` — SNS + 通知 Lambda + CloudWatch 告警 + Dashboard
