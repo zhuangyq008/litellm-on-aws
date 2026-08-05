@@ -38,7 +38,8 @@ HTTP_4XX_THRESHOLD="${HTTP_4XX_THRESHOLD:-1000}"
 HTTP_5XX_THRESHOLD="${HTTP_5XX_THRESHOLD:-25}"
 LATENCY_P95_THRESHOLD="${LATENCY_P95_THRESHOLD:-45}"
 REQUEST_ANOMALY_STDEV="${REQUEST_ANOMALY_STDEV:-3}"
-NAT_EGRESS_ANOMALY_STDEV="${NAT_EGRESS_ANOMALY_STDEV:-6}"
+NAT_EGRESS_THRESHOLD_BYTES="${NAT_EGRESS_THRESHOLD_BYTES:-524288000}"
+NAT_EGRESS_BURST_THRESHOLD_BYTES="${NAT_EGRESS_BURST_THRESHOLD_BYTES:-104857600}"
 MASTER_KEY_USAGE_THRESHOLD="${MASTER_KEY_USAGE_THRESHOLD:-0}"
 MONTHLY_BUDGET_USD="${MONTHLY_BUDGET_USD:-5000}"
 COST_ANOMALY_THRESHOLD_USD="${COST_ANOMALY_THRESHOLD_USD:-100}"
@@ -150,7 +151,7 @@ aws cloudformation deploy \
     "MasterKeyNamePattern=${MASTER_KEY_PATTERN}" \
     "MasterKeyUsageThreshold=${MASTER_KEY_USAGE_THRESHOLD}"
 
-# ========== Step 4: VPC Flow Logs → S3 取证 + NAT 出站异常告警 ==========
+# ========== Step 4: VPC Flow Logs → S3 取证 + NAT 出站流量告警 ==========
 VPCID="$(aws cloudformation list-exports --region "$REGION" \
   --query "Exports[?Name=='${PROJECT_NAME}-VpcId'].Value" --output text)"
 mapfile -t NATS < <(aws ec2 describe-nat-gateways --region "$REGION" \
@@ -166,7 +167,8 @@ aws cloudformation deploy \
     "ProjectName=${PROJECT_NAME}" \
     "NatGatewayId1=${NATS[0]:-}" \
     "NatGatewayId2=${NATS[1]:-}" \
-    "NatEgressAnomalyStdev=${NAT_EGRESS_ANOMALY_STDEV}"
+    "NatEgressThresholdBytes=${NAT_EGRESS_THRESHOLD_BYTES}" \
+    "NatEgressBurstThresholdBytes=${NAT_EGRESS_BURST_THRESHOLD_BYTES}"
 
 # ========== Step 5: 成本告警（Budgets + Cost Anomaly Detection）==========
 log "部署 ${COST_STACK}"
@@ -189,7 +191,7 @@ log " 告警主题:   ${SNS_ARN}"
 log " Dashboard:  ${DASH_URL}"
 log " WAF WebACL: ${PROJECT_NAME}-ops-acl (已关联 ALB)"
 log " 安全告警:   GuardDuty(sev>=${GUARDDUTY_SEVERITY}) / master key 读取 / root 登录 → 飞书"
-log " Flow Logs:  VPC→S3 取证 + NAT 出站异常告警(建表: ops/security/setup-flowlogs-athena.sh)"
+log " Flow Logs:  VPC→S3 取证 + NAT 出站流量告警(建表: ops/security/setup-flowlogs-athena.sh)"
 log " 成本告警:   月度预算 \$${MONTHLY_BUDGET_USD}(实际80%/预测100%) + 费用异常(≥\$${COST_ANOMALY_THRESHOLD_USD}) → 飞书"
 log "========================================="
 log "卸载：aws cloudformation delete-stack --stack-name ${COST_STACK} --region ${REGION}"

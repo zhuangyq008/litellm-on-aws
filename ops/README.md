@@ -77,7 +77,8 @@ WAF 的 `WebACLAssociation` 会随栈删除自动从 ALB 解绑，网关不受�
 | 任务数不足 | `RunningTaskCount` | < 期望值 连续 3 周期 | `DesiredTaskCount` | monitoring |
 | 不健康目标 | ALB `UnHealthyHostCount` | > 0（需填 `TARGET_GROUP_FULL_NAME`）| `TargetGroupFullName` | monitoring |
 | WAF 拦截激增 | `AWS/WAFV2 BlockedRequests` | 5min > 200 | `WafBlockedThreshold` | waf |
-| NAT 出站异常 | `AWS/NATGateway BytesOutToDestination` | 异常检测带宽(6σ) 连续 2 周期越界 | `NatEgressAnomalyStdev` | flowlogs |
+| NAT 出站持续偏高 | `AWS/NATGateway BytesOutToDestination` | Sum > 500MB/1h 连续 2 小时 | `NatEgressThresholdBytes` | flowlogs |
+| NAT 出站短时突发 | `AWS/NATGateway BytesOutToDestination` | Sum > 100MB/5min 连续 2 周期 | `NatEgressBurstThresholdBytes` | flowlogs |
 
 阈值均为 CFN 参数，上线后按实际流量在 `params.env` / `--parameter-overrides` 调整重新部署即可。
 
@@ -244,7 +245,7 @@ aws athena start-query-execution --region us-east-1 \
 
 `04-flowlogs.yaml` 部署：
 - VPC Flow Logs（全流量，自定义字段含 `pkt-srcaddr/flow-direction/traffic-path`）→ 专用 S3 桶 `${ProjectName}-ops-flowlogs-<acct>`（加密+PAB+生命周期）
-- **NAT 出站字节量异常检测告警**（`AWS/NATGateway BytesOutToDestination` 异常带宽，`NatEgressAnomalyStdev` 默认 6σ，见告警清单说明）→ 飞书：数据外泄的**实时**信号，复用 NAT 原生指标，零额外采集成本
+- **NAT 出站字节量固定阈值告警**（`AWS/NATGateway BytesOutToDestination`，`NatEgressThresholdBytes` 默认 500MB/h 连续 2 小时，见告警清单说明）→ 飞书：数据外泄的**实时**信号，复用 NAT 原生指标，零额外采集成本
 
 建取证表（Flow Logs 到 S3 有 ~10 分钟延迟）：
 ```bash

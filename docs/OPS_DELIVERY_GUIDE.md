@@ -207,7 +207,8 @@ LiteLLM 在每笔调用的元数据中记录 `user_api_key_alias`（virtual key 
 | （root 登录，EventBridge 规则） | 安全·事件 | root 控制台登录 |
 | `litellm-gw-ops-target-4xx-spike` | 安全·固定 | 后端 4XX >1000/5min ×2 周期 |
 | `litellm-gw-ops-request-count-anomaly` | 安全·动态 | 请求量出带（带宽 3）×2 周期 |
-| `litellm-gw-ops-nat1/2-egress-anomaly` | 安全·动态 | NAT 出站字节出带（带宽 6）×2 周期 |
+| `litellm-gw-ops-nat1/2-egress-high` | 安全·固定 | NAT 出站 Sum > 500MB/1h 连续 2 小时 |
+| `litellm-gw-ops-nat1/2-egress-burst` | 安全·固定 | NAT 出站 Sum > 100MB/5min 连续 2 周期 |
 | `litellm-gw-ops-target-5xx` | 健康·固定 | 后端 5XX >25/5min |
 | `litellm-gw-ops-latency-p95` | 健康·固定 | p95 >45s ×3 周期 |
 | `litellm-gw-ops-unhealthy-hosts` | 健康·固定 | 不健康主机 >0 ×3 分钟 |

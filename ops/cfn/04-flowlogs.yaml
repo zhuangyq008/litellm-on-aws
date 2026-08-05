@@ -27,15 +27,25 @@ Parameters:
     Type: String
     Default: ""
     Description: NAT 网关 2（可选）
-  NatEgressAnomalyStdev:
+  NatEgressBurstThresholdBytes:
     Type: Number
-    Default: 6
-    MinValue: 1
-    MaxValue: 20
+    Default: 104857600
+    MinValue: 10485760
+    MaxValue: 107374182400
     Description: >
-      NAT 出站字节异常检测带宽（标准差，越大越不敏感）。
-      2000+ 员工爬坡期出站流量增长快，模型基线偏低易误报，故默认 6；
-      客户上线稳定后可按实际基线回调（真实数据外泄通常远超基线多倍，6 仍可捕获）。
+      NAT 单 5 分钟出站字节阈值（默认 100MB），连续 2 周期超过才告警。
+      与小时阈值互补：小时告警要 2 小时才响，抓不到"20 分钟拉走 2GB"的短时突发。
+      实测 5 分钟峰值 ~9MB，100MB 有 10 倍余量。
+  NatEgressThresholdBytes:
+    Type: Number
+    Default: 524288000
+    MinValue: 10485760
+    MaxValue: 107374182400
+    Description: >
+      NAT 单小时出站字节固定阈值（默认 500MB），连续 2 小时超过才告警（≈持续 1GB+ 外泄）。
+      不用异常检测：Bedrock 走 VPC Endpoint 不过 NAT，NAT 闲时基线趋零（~0.5MB/h），
+      偶发镜像拉取即达基线百倍，任何标准差带都会持续误报（stdev=10 实测仍每天数十次翻转）。
+      实测 14 天小时峰值 ~45MB，500MB 有 10 倍余量；客户上线后按实际峰值×10 校准。
 
 Conditions:
   HasNat1: !Not [!Equals [!Ref NatGatewayId1, ""]]
@@ -102,64 +112,86 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-ops-vpc-flowlog"
 
-  # ---- NAT 出站字节量异常检测（数据外泄实时信号）----
-  NatEgressAnomaly1:
+  # ---- NAT 出站字节量固定阈值（数据外泄实时信号；不发 OK 通知，避免翻转噪音）----
+  NatEgressHigh1:
     Type: AWS::CloudWatch::Alarm
     Condition: HasNat1
     Properties:
-      AlarmName: !Sub "${ProjectName}-ops-nat1-egress-anomaly"
-      AlarmDescription: "NAT1 出站字节量偏离基线（疑似数据外泄/异常出站）"
-      ComparisonOperator: GreaterThanUpperThreshold
+      AlarmName: !Sub "${ProjectName}-ops-nat1-egress-high"
+      AlarmDescription: "NAT1 出站流量持续偏高（疑似数据外泄/异常出站）"
+      Namespace: AWS/NATGateway
+      MetricName: BytesOutToDestination
+      Dimensions:
+        - Name: NatGatewayId
+          Value: !Ref NatGatewayId1
+      Statistic: Sum
+      Period: 3600
       EvaluationPeriods: 2
-      ThresholdMetricId: ad1
+      DatapointsToAlarm: 2
+      Threshold: !Ref NatEgressThresholdBytes
+      ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
-      OKActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
-      Metrics:
-        - Id: m1
-          MetricStat:
-            Metric:
-              Namespace: AWS/NATGateway
-              MetricName: BytesOutToDestination
-              Dimensions:
-                - Name: NatGatewayId
-                  Value: !Ref NatGatewayId1
-            Period: 300
-            Stat: Sum
-          ReturnData: true
-        - Id: ad1
-          Expression: !Sub "ANOMALY_DETECTION_BAND(m1, ${NatEgressAnomalyStdev})"
-          Label: "egress bytes (expected)"
-          ReturnData: true
 
-  NatEgressAnomaly2:
+  NatEgressBurst1:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNat1
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-nat1-egress-burst"
+      AlarmDescription: "NAT1 出站流量短时突发（疑似快速批量外泄）"
+      Namespace: AWS/NATGateway
+      MetricName: BytesOutToDestination
+      Dimensions:
+        - Name: NatGatewayId
+          Value: !Ref NatGatewayId1
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: !Ref NatEgressBurstThresholdBytes
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
+
+  NatEgressHigh2:
     Type: AWS::CloudWatch::Alarm
     Condition: HasNat2
     Properties:
-      AlarmName: !Sub "${ProjectName}-ops-nat2-egress-anomaly"
-      AlarmDescription: "NAT2 出站字节量偏离基线（疑似数据外泄/异常出站）"
-      ComparisonOperator: GreaterThanUpperThreshold
+      AlarmName: !Sub "${ProjectName}-ops-nat2-egress-high"
+      AlarmDescription: "NAT2 出站流量持续偏高（疑似数据外泄/异常出站）"
+      Namespace: AWS/NATGateway
+      MetricName: BytesOutToDestination
+      Dimensions:
+        - Name: NatGatewayId
+          Value: !Ref NatGatewayId2
+      Statistic: Sum
+      Period: 3600
       EvaluationPeriods: 2
-      ThresholdMetricId: ad1
+      DatapointsToAlarm: 2
+      Threshold: !Ref NatEgressThresholdBytes
+      ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
-      OKActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
-      Metrics:
-        - Id: m1
-          MetricStat:
-            Metric:
-              Namespace: AWS/NATGateway
-              MetricName: BytesOutToDestination
-              Dimensions:
-                - Name: NatGatewayId
-                  Value: !Ref NatGatewayId2
-            Period: 300
-            Stat: Sum
-          ReturnData: true
-        - Id: ad1
-          Expression: !Sub "ANOMALY_DETECTION_BAND(m1, ${NatEgressAnomalyStdev})"
-          Label: "egress bytes (expected)"
-          ReturnData: true
+
+  NatEgressBurst2:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasNat2
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-nat2-egress-burst"
+      AlarmDescription: "NAT2 出站流量短时突发（疑似快速批量外泄）"
+      Namespace: AWS/NATGateway
+      MetricName: BytesOutToDestination
+      Dimensions:
+        - Name: NatGatewayId
+          Value: !Ref NatGatewayId2
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: !Ref NatEgressBurstThresholdBytes
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!ImportValue { "Fn::Sub": "${ProjectName}-ops-AlertTopicArn" }]
 
 Outputs:
   FlowLogsBucketName:
