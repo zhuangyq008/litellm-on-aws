@@ -222,6 +222,8 @@ Resources:
                     Fn::Sub: "${ProjectName}-AnthropicSecretArn"
                   - !ImportValue
                     Fn::Sub: "${ProjectName}-GeminiSecretArn"
+                  - !ImportValue
+                    Fn::Sub: "${ProjectName}-BedrockMantleSecretArn"
 
   ECSTaskRole:
     Type: AWS::IAM::Role
@@ -355,6 +357,11 @@ Resources:
                 - "${SecretArn}:api_key::"
                 - SecretArn: !ImportValue
                     Fn::Sub: "${ProjectName}-GeminiSecretArn"
+            - Name: BEDROCK_MANTLE_API_KEY
+              ValueFrom: !Sub
+                - "${SecretArn}:api_key::"
+                - SecretArn: !ImportValue
+                    Fn::Sub: "${ProjectName}-BedrockMantleSecretArn"
           LogConfiguration:
             LogDriver: awslogs
             Options:

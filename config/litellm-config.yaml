@@ -15,17 +15,6 @@ model_list:
       model: openai/gpt-4.1
       api_key: os.environ/OPENAI_API_KEY
 
-  # --- Anthropic ---
-  - model_name: claude-sonnet-4-20250514
-    litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  - model_name: claude-haiku-4-5-20251001
-    litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
-
   # --- AWS Bedrock (uses IAM task role, no API key) ---
   - model_name: bedrock-claude-opus
     litellm_params:
@@ -42,6 +31,29 @@ model_list:
       model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
       aws_region_name: us-east-1
 
+  # --- Anthropic native model names → Bedrock (for Claude Code compatibility) ---
+  - model_name: claude-opus-4-6
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-6-v1
+      aws_region_name: us-east-1
+
+  - model_name: claude-sonnet-4-20250514
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-6
+      aws_region_name: us-east-1
+
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      aws_region_name: us-east-1
+
+  # --- AWS Bedrock Mantle ---
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: bedrock_mantle/anthropic.claude-opus-4-8
+      aws_region_name: us-east-1
+      api_key: os.environ/BEDROCK_MANTLE_API_KEY
+
   # --- Google Gemini ---
   - model_name: gemini-2.0-flash
     litellm_params:
@@ -57,6 +69,16 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL
   store_model_in_db: true
+  # Map Anthropic native model names → Bedrock routes
+  # Claude Code subagents send native names like "claude-haiku-4-5-20251001"
+  model_group_alias:
+    "claude-opus-4-6": "bedrock-claude-opus"
+    "claude-opus-4-6-20250514": "bedrock-claude-opus"
+    "claude-sonnet-4-6": "bedrock-claude-sonnet"
+    "claude-sonnet-4-6-20250514": "bedrock-claude-sonnet"
+    "claude-sonnet-4-20250514": "bedrock-claude-sonnet"
+    "claude-haiku-4-5": "bedrock-claude-haiku"
+    "claude-haiku-4-5-20251001": "bedrock-claude-haiku"
 
 litellm_settings:
   num_retries: 3
