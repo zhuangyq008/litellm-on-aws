@@ -90,11 +90,14 @@ Resources:
             except Exception as e:
               cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
 
-  # --- ALB Security Group (CloudFront only) ---
+  # --- ALB Security Group ---
+  # Port 80: CloudFront prefix list only (legacy CDN path)
+  # Port 443: 0.0.0.0/0 because Global Accelerator preserves client IP,
+  #          so the ALB sees the original client IP, not GA's edge IPs.
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Allow HTTP to ALB from CloudFront only"
+      GroupDescription: "Allow HTTP from CloudFront and HTTPS from internet (via GA)"
       VpcId: !ImportValue
         Fn::Sub: "${ProjectName}-VpcId"
       SecurityGroupIngress:
@@ -102,6 +105,11 @@ Resources:
           FromPort: 80
           ToPort: 80
           SourcePrefixListId: !GetAtt CloudFrontPrefixListLookup.PrefixListId
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: "HTTPS from internet via Global Accelerator (client IP preserved)"
       Tags:
         - Key: Name
           Value: !Sub "${ProjectName}-alb-sg"
@@ -185,6 +193,20 @@ Resources:
       LoadBalancerArn: !Ref ALB
       Port: 80
       Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  ALBHttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      Certificates:
+        - CertificateArn: !ImportValue
+            Fn::Sub: "${ProjectName}-AlbCertificateArn"
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
@@ -404,6 +426,11 @@ Outputs:
     Description: "LiteLLM Gateway URL"
     Export:
       Name: !Sub "${ProjectName}-ALBDnsName"
+  ALBArn:
+    Value: !Ref ALB
+    Description: "ALB ARN for Global Accelerator endpoint"
+    Export:
+      Name: !Sub "${ProjectName}-ALBArn"
   ECSClusterName:
     Value: !Ref ECSCluster
     Export:

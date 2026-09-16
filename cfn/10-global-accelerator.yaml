@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "litellm-gw: Global Accelerator fronting the us-east-1 ALB (deploy in us-west-2)"
+
+# NOTE:
+# - AWS::GlobalAccelerator::* resources can only be deployed in us-west-2
+#   (the GA control-plane region), even though GA itself is a global service.
+# - The ALB lives in us-east-1, so its ARN is passed in via parameter
+#   instead of !ImportValue (which cannot cross regions).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+  AlbArn:
+    Type: String
+    Description: ARN of the ALB in us-east-1
+  EndpointRegion:
+    Type: String
+    Default: us-east-1
+    Description: Region where the ALB lives
+
+Resources:
+  Accelerator:
+    Type: AWS::GlobalAccelerator::Accelerator
+    Properties:
+      Name: !Sub "${ProjectName}-ga"
+      IpAddressType: IPV4
+      Enabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  ListenerHttp:
+    Type: AWS::GlobalAccelerator::Listener
+    Properties:
+      AcceleratorArn: !Ref Accelerator
+      Protocol: TCP
+      ClientAffinity: NONE
+      PortRanges:
+        - FromPort: 80
+          ToPort: 80
+
+  ListenerHttps:
+    Type: AWS::GlobalAccelerator::Listener
+    Properties:
+      AcceleratorArn: !Ref Accelerator
+      Protocol: TCP
+      ClientAffinity: NONE
+      PortRanges:
+        - FromPort: 443
+          ToPort: 443
+
+  EndpointGroupHttp:
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref ListenerHttp
+      EndpointGroupRegion: !Ref EndpointRegion
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health/liveliness
+      HealthCheckPort: 80
+      HealthCheckIntervalSeconds: 30
+      ThresholdCount: 3
+      EndpointConfigurations:
+        - EndpointId: !Ref AlbArn
+          Weight: 128
+          ClientIPPreservationEnabled: true
+
+  EndpointGroupHttps:
+    Type: AWS::GlobalAccelerator::EndpointGroup
+    Properties:
+      ListenerArn: !Ref ListenerHttps
+      EndpointGroupRegion: !Ref EndpointRegion
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health/liveliness
+      HealthCheckPort: 80
+      HealthCheckIntervalSeconds: 30
+      ThresholdCount: 3
+      EndpointConfigurations:
+        - EndpointId: !Ref AlbArn
+          Weight: 128
+          ClientIPPreservationEnabled: true
+
+Outputs:
+  AcceleratorArn:
+    Value: !Ref Accelerator
+  AcceleratorDnsName:
+    Description: GA DNS name (auto-generated, also resolvable to the two static IPs)
+    Value: !GetAtt Accelerator.DnsName
+  StaticIpAddresses:
+    Description: Two anycast static IPs assigned by GA (use these for Route53 A records)
+    Value: !Join [",", !GetAtt Accelerator.Ipv4Addresses]
