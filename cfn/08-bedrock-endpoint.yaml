@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Interface VPC Endpoint for Amazon Bedrock Runtime, used by LiteLLM ECS tasks for private connectivity."
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: litellm-gw
+  EcsSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: "ECS task security group allowed to reach the Bedrock endpoint"
+
+Resources:
+  BedrockEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow HTTPS from ECS tasks to Bedrock VPC endpoint"
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EcsSecurityGroupId
+          Description: "HTTPS from ECS tasks"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-bedrock-endpoint-sg"
+
+  BedrockRuntimeEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !ImportValue
+        Fn::Sub: "${ProjectName}-VpcId"
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.bedrock-runtime"
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PrivateSubnet1Id"
+        - !ImportValue
+          Fn::Sub: "${ProjectName}-PrivateSubnet2Id"
+      SecurityGroupIds:
+        - !Ref BedrockEndpointSecurityGroup
+
+Outputs:
+  BedrockRuntimeEndpointId:
+    Value: !Ref BedrockRuntimeEndpoint
+    Export:
+      Name: !Sub "${ProjectName}-BedrockRuntimeEndpointId"
+  BedrockEndpointSecurityGroupId:
+    Value: !Ref BedrockEndpointSecurityGroup
+    Export:
+      Name: !Sub "${ProjectName}-BedrockEndpointSecurityGroupId"
