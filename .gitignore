@@ -3,3 +3,5 @@
 audit-ui/node_modules/
 audit-ui/dist/
 ops/params.env
+__pycache__/
+*.pyc
