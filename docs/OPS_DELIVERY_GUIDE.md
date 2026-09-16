@@ -205,8 +205,11 @@ LiteLLM 在每笔调用的元数据中记录 `user_api_key_alias`（virtual key 
 | `litellm-gw-ops-guardduty-findings` | 安全·事件 | GuardDuty severity≥4 |
 | （密钥读取，EventBridge 规则） | 安全·事件 | GetSecretValue 命中 master key |
 | （root 登录，EventBridge 规则） | 安全·事件 | root 控制台登录 |
-| `litellm-gw-ops-target-4xx-spike` | 安全·固定 | 后端 4XX >1000/5min ×2 周期 |
-| `litellm-gw-ops-request-count-anomaly` | 安全·动态 | 请求量出带（带宽 3）×2 周期 |
+| `litellm-gw-ops-waf-ratelimit-triggered` | 安全·绊线 | WAF 限速拦截 >0 次/5min（key 被滥用/盗用）|
+| `litellm-gw-ops-waf-api-path-blocked` | 安全·绊线 | 真实推理端点被 WAF 拦 >0 次/5min |
+| `litellm-gw-ops-target-4xx-spike` | 安全·固定 | 后端 4XX >1000/5min，3 周期中 2 次 |
+| `litellm-gw-ops-request-count-high` | 安全·固定 | 请求量 >3000/5min ×2 周期 |
+| `litellm-gw-ops-waf-blocked-flood` | 安全·固定 | WAF 拦截 >5000/1h（洪水量级，非扫描器噪声）|
 | `litellm-gw-ops-nat1/2-egress-high` | 安全·固定 | NAT 出站 Sum > 500MB/1h 连续 2 小时 |
 | `litellm-gw-ops-nat1/2-egress-burst` | 安全·固定 | NAT 出站 Sum > 100MB/5min 连续 2 周期 |
 | `litellm-gw-ops-target-5xx` | 健康·固定 | 后端 5XX >25/5min |

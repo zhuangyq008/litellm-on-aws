@@ -68,22 +68,28 @@ WAF 的 `WebACLAssociation` 会随栈删除自动从 ALB 解绑，网关不受�
 | 告警 | 指标 | 默认条件 | 参数 | 栈 |
 |---|---|---|---|---|
 | **master key 使用** | `litellm-gw/audit MasterKeyRequests` | 5min 内 > 0（绊线：一被使用即告警）| `MasterKeyUsageThreshold` | security |
-| 请求量异常 | ALB `RequestCount` | 异常检测带宽(3σ) 连续 2 周期越界 | `RequestCountAnomalyStdev` | monitoring |
-| 4XX 激增 | ALB `HTTPCode_Target_4XX_Count` | 5min > 1000 连续 2 周期 | `Http4xxThreshold` | monitoring |
+| 请求量过高 | ALB `RequestCount` | 5min > 3000 连续 2 周期 | `RequestCountThreshold` | monitoring |
+| 4XX 激增 | ALB `HTTPCode_Target_4XX_Count` | 5min > 1000，3 周期中 2 次 | `Http4xxThreshold` | monitoring |
 | 后端 5XX | ALB `HTTPCode_Target_5XX_Count` | 5min > 25 | `Http5xxThreshold` | monitoring |
 | 延迟 p95 | ALB `TargetResponseTime` | p95 > 45s 连续 3 周期 | `TargetResponseTimeThreshold` | monitoring |
 | CPU 高 | ECS `CPUUtilization` | > 85% 连续 3 周期 | `EcsCpuThreshold` | monitoring |
 | 内存高 | ECS `MemoryUtilization` | > 85% 连续 3 周期 | `EcsMemThreshold` | monitoring |
 | 任务数不足 | `RunningTaskCount` | < 期望值 连续 3 周期 | `DesiredTaskCount` | monitoring |
 | 不健康目标 | ALB `UnHealthyHostCount` | > 0（需填 `TARGET_GROUP_FULL_NAME`）| `TargetGroupFullName` | monitoring |
-| WAF 拦截激增 | `AWS/WAFV2 BlockedRequests` | 5min > 200 | `WafBlockedThreshold` | waf |
+| **WAF 限速触发** | `AWS/WAFV2 BlockedRequests`（3 条 rate 规则合计） | 5min > 0（绊线：key 被滥用/盗用）| `WafRateLimitBlockThreshold` | waf |
+| **推理端点被拦** | `litellm-gw/waf ApiPathBlockedRequests` | 5min > 0（绊线：托管规则误杀客户端/凭证攻击）| `WafApiPathBlockThreshold` | waf |
+| WAF 拦截洪水 | `AWS/WAFV2 BlockedRequests` | 1h > 5000 | `WafBlockedThreshold` | waf |
 | NAT 出站持续偏高 | `AWS/NATGateway BytesOutToDestination` | Sum > 500MB/1h 连续 2 小时 | `NatEgressThresholdBytes` | flowlogs |
 | NAT 出站短时突发 | `AWS/NATGateway BytesOutToDestination` | Sum > 100MB/5min 连续 2 周期 | `NatEgressBurstThresholdBytes` | flowlogs |
 
 阈值均为 CFN 参数，上线后按实际流量在 `params.env` / `--parameter-overrides` 调整重新部署即可。
 
 - **4XX 用 `Target_4XX` 而非 `ELB_4XX`**：后者是 ALB 自身的 400/460/463，抓不到 LiteLLM 返回的 401/403/429（凭证撞库信号）——这两个指标选错会导致撞库完全无感。
-- **4XX=1000 / 5XX=25 / p95=45s / 3σ**：按 2000+ 员工规模校准（429 限额、400 上下文超长、LLM 长首字节在此规模下是常态噪声）；上线一周后按真实基线回调。
+- **4XX=1000 / 5XX=25 / p95=45s**：按 2000+ 员工规模校准（429 限额、400 上下文超长、LLM 长首字节在此规模下是常态噪声）；上线一周后按真实基线回调。
+- **WAF 拦截量不是"有攻击"信号**：公网 ALB 每天被扫描器拦下数千次是常态（实测 14 天 34,633 次，71% 是 Geo 白名单挡掉的境外扫描，其余为 `/.env`、`/.git/config` 等通用探测，来自允许国家的拦截也全是同类扫描）。因此拦截量告警只保留"洪水量级"口径（1h > 5000，实测小时峰值 3446），可行动的信号改由**限速触发**和**推理端点被拦**两个绊线告警承担——这两者实测 14 天均为 0。
+- **请求量用固定阈值而非异常检测**：网关请求量基线接近零（实测 p50=0 / p99=25 / 峰值 457），异常检测上界长期钉在 ~53，任何小批量调用都越线（30 天误报 12 次）。与 NAT 出站告警同一个坑。
+- **尖峰/安全类告警不配 `OKActions`**：扫描爆发、限速触发、4XX 回落的"已恢复"不是需要值班响应的事件；配了等于每次事件推 2 条消息。可用性类告警（5XX / 延迟 / 不健康目标 / 任务数 / CPU / 内存）保留恢复通知。**这些告警的"是否已恢复"需查 CloudWatch 控制台**，飞书群只会收到 ALARM。
+- **凭证攻击不靠 WAF 告警发现**：带凭证打业务接口的撞库/滥用不会被 WAF 拦（路径与鉴权头都合法），它体现为 LiteLLM 返回的大量 401/403 —— 由 **4XX 告警**负责；WAF 只负责拦下的那部分。两者分工不要混。
 - **NAT 异常带宽默认 6σ**：用户爬坡期出站流量增长快、异常检测模型基线偏低，3σ 实测误报（正常增长 1.46 倍即触发）；6σ 仍能捕获量级级别的数据外泄。
 
 ---

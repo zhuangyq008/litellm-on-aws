@@ -37,7 +37,10 @@ ENABLE_GEO_BLOCK="${ENABLE_GEO_BLOCK:-false}"
 HTTP_4XX_THRESHOLD="${HTTP_4XX_THRESHOLD:-1000}"
 HTTP_5XX_THRESHOLD="${HTTP_5XX_THRESHOLD:-25}"
 LATENCY_P95_THRESHOLD="${LATENCY_P95_THRESHOLD:-45}"
-REQUEST_ANOMALY_STDEV="${REQUEST_ANOMALY_STDEV:-3}"
+REQUEST_COUNT_THRESHOLD="${REQUEST_COUNT_THRESHOLD:-3000}"
+WAF_BLOCKED_THRESHOLD="${WAF_BLOCKED_THRESHOLD:-5000}"
+WAF_RATELIMIT_BLOCK_THRESHOLD="${WAF_RATELIMIT_BLOCK_THRESHOLD:-0}"
+WAF_API_PATH_BLOCK_THRESHOLD="${WAF_API_PATH_BLOCK_THRESHOLD:-0}"
 NAT_EGRESS_THRESHOLD_BYTES="${NAT_EGRESS_THRESHOLD_BYTES:-524288000}"
 NAT_EGRESS_BURST_THRESHOLD_BYTES="${NAT_EGRESS_BURST_THRESHOLD_BYTES:-104857600}"
 MASTER_KEY_USAGE_THRESHOLD="${MASTER_KEY_USAGE_THRESHOLD:-0}"
@@ -106,7 +109,7 @@ aws cloudformation deploy \
     "Http4xxThreshold=${HTTP_4XX_THRESHOLD}" \
     "Http5xxThreshold=${HTTP_5XX_THRESHOLD}" \
     "TargetResponseTimeThreshold=${LATENCY_P95_THRESHOLD}" \
-    "RequestCountAnomalyStdev=${REQUEST_ANOMALY_STDEV}"
+    "RequestCountThreshold=${REQUEST_COUNT_THRESHOLD}"
 
 SNS_ARN="$(aws cloudformation describe-stacks --stack-name "$MON_STACK" --region "$REGION" \
   --query "Stacks[0].Outputs[?OutputKey=='AlertTopicArn'].OutputValue" --output text)"
@@ -136,6 +139,9 @@ aws cloudformation deploy \
     "RateLimitPerIp=${RATE_LIMIT_PER_IP}" \
     "EnableGeoBlock=${ENABLE_GEO_BLOCK}" \
     "AllowedCountries=${ALLOWED_COUNTRIES}" \
+    "WafBlockedThreshold=${WAF_BLOCKED_THRESHOLD}" \
+    "WafRateLimitBlockThreshold=${WAF_RATELIMIT_BLOCK_THRESHOLD}" \
+    "WafApiPathBlockThreshold=${WAF_API_PATH_BLOCK_THRESHOLD}" \
     "AlertTopicArn=${SNS_ARN}"
 
 # ========== Step 3: 安全事件告警栈（GuardDuty / 密钥读取 / root 登录）==========

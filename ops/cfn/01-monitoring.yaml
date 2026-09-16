@@ -7,6 +7,7 @@ Parameters:
   ProjectName:
     Type: String
     Default: litellm-gw
+    AllowedPattern: "^[a-zA-Z0-9-]+$"
     Description: 与主栈一致的项目名，用于 ImportValue 引用主栈导出
 
   # --- IM 通知 ---
@@ -43,10 +44,15 @@ Parameters:
     Type: Number
     Default: 85
     Description: ECS 服务内存利用率阈值（%）
-  RequestCountAnomalyStdev:
+  RequestCountThreshold:
     Type: Number
-    Default: 3
-    Description: 请求量异常检测带宽标准差（越大越不敏感）。大规模流量波动大，2 偏敏感，用 3 减噪
+    Default: 3000
+    MinValue: 100
+    Description: >
+      5min 内 ALB 请求量阈值（连续 2 周期超过才告警）。⚠️ 不用异常检测：网关请求量基线接近零
+      （实测 4 天 p50=0 / p90=1 / p99=25 / 峰值 457），异常检测上界被钉在 ~53，
+      任何一次扫描或小批量真实调用都越线，30 天误报 12 次。与 NAT 出站告警同一个坑。
+      客户爬坡后按实测 5min 峰值×3 校准。
   TargetGroupFullName:
     Type: String
     Default: ""
@@ -133,34 +139,25 @@ Resources:
   # ---------------------------------------------------------------------------
   # 告警 —— 异常流量
   # ---------------------------------------------------------------------------
-  # 请求量突增：CloudWatch 异常检测带宽，偏离基线即告警
-  RequestCountAnomalyAlarm:
+  # 请求量突增：固定阈值（不用异常检测，理由见 RequestCountThreshold 参数说明）
+  # 不配 OKActions：流量尖峰回落不是需要值班响应的事件。
+  RequestCountHighAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-ops-request-count-anomaly"
-      AlarmDescription: "ALB 请求量偏离历史基线（异常流量突增/骤降）"
-      ComparisonOperator: GreaterThanUpperThreshold
+      AlarmName: !Sub "${ProjectName}-ops-request-count-high"
+      AlarmDescription: "ALB 请求量持续超阈值（异常流量突增/滥用）"
+      Namespace: AWS/ApplicationELB
+      MetricName: RequestCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
+      Statistic: Sum
+      Period: 300
       EvaluationPeriods: 2
-      ThresholdMetricId: ad1
+      Threshold: !Ref RequestCountThreshold
+      ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertTopic]
-      OKActions: [!Ref AlertTopic]
-      Metrics:
-        - Id: m1
-          MetricStat:
-            Metric:
-              Namespace: AWS/ApplicationELB
-              MetricName: RequestCount
-              Dimensions:
-                - Name: LoadBalancer
-                  Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
-            Period: 300
-            Stat: Sum
-          ReturnData: true
-        - Id: ad1
-          Expression: !Sub "ANOMALY_DETECTION_BAND(m1, ${RequestCountAnomalyStdev})"
-          Label: "RequestCount (expected band)"
-          ReturnData: true
 
   # 大量 4XX（撞库/凭证滥用信号）
   # 用 HTTPCode_Target_4XX_Count（后端 LiteLLM 产生的 401/403/429），而非 ELB_4XX
@@ -177,12 +174,14 @@ Resources:
           Value: !Select [1, !Split ["loadbalancer/", !ImportValue { "Fn::Sub": "${ProjectName}-ALBArn" }]]
       Statistic: Sum
       Period: 300
-      EvaluationPeriods: 2
+      # 3 个周期里有 2 个越线才告警：单个 5min 尖峰（客户端批量重试等）不惊动值班，
+      # 持续的撞库/滥用仍会命中。不配 OKActions：4XX 回落不需要通知。
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 2
       Threshold: !Ref Http4xxThreshold
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertTopic]
-      OKActions: [!Ref AlertTopic]
 
   # ---------------------------------------------------------------------------
   # 告警 —— 服务健康

@@ -9,6 +9,8 @@ Parameters:
   ProjectName:
     Type: String
     Default: litellm-gw
+    AllowedPattern: "^[a-zA-Z0-9-]+$"
+    Description: 项目名；用于构造指标命名空间与指标名，非法字符会导致告警指标错位而永不触发
   EnableAdminLockdown:
     Type: String
     Default: "false"
@@ -49,8 +51,30 @@ Parameters:
     Description: monitoring 栈输出的 SNS 主题 ARN；填了才创建 WAF BlockedRequests 告警
   WafBlockedThreshold:
     Type: Number
-    Default: 200
-    Description: 5min 内 WAF 拦截数阈值（激增=攻击/滥用）
+    Default: 5000
+    MinValue: 100
+    Description: >
+      单小时 WAF 拦截总数阈值（L7 洪水量级信号）。⚠️ 这不是「有攻击」告警：暴露在公网的 ALB
+      每天被扫描器拦下数千次是常态（实测 14 天 34k 次，71% 是 Geo 白名单挡掉的境外扫描，
+      其余为 /.env、/.git/config 等通用探测），按 5min/200 告警等于给互联网背景噪声告警。
+      本阈值只用于识别「量级异常」，实测小时峰值 3446，取 5000 留余量。客户按实测小时峰值×1.5 校准。
+  WafRateLimitBlockThreshold:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >
+      5min 内被 rate-based 规则拦下的请求数阈值（0=一旦触发即告警）。这是真正可行动的信号：
+      说明某个 API key 被滥用/盗用，或单一源 IP 在打洪泛。实测 14 天为 0，故设为绊线。
+      若客户上线后存在合法的团队共享 key 撞限速，先调高本值并推动拆分 key，而不是关掉告警。
+  WafApiPathBlockThreshold:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >
+      5min 内「真实推理端点」被拦下的请求数阈值（0=一旦发生即告警）。只统计 /v1/messages、
+      /v1/chat/completions 等实际业务路径，且排除 Geo 白名单命中（境外扫描器也会探这些路径）。
+      命中即意味着：托管规则误杀了客户端（历史踩过 3 次子规则误杀 Claude Code），或攻击者带着
+      凭证打业务接口。实测 14 天为 0。
 
 Conditions:
   HasGeo: !Equals [!Ref EnableGeoBlock, "true"]
@@ -317,13 +341,40 @@ Resources:
         - SingleHeader:
             Name: x-api-key
 
-  # --- WAF 拦截激增告警（复用 monitoring 栈的 SNS 主题）---
+  # --- 「真实推理端点被拦」指标（从 WAF 日志抽取）---
+  # WAF 只按规则维度出指标，拿不到 URI 维度；而"拦截总量"里 99% 是扫描器噪声。
+  # 用日志 metric filter 精确到业务路径 + 排除 Geo 命中，把噪声压到零、只留可行动信号。
+  # 路径用精确匹配而非 /v1* 前缀：扫描器大量探测 /v1/.env、/v1/models、/v1/graphql，
+  # 前缀匹配会把它们算进来（实测 14 天前缀口径 ~100 次、精确口径 0 次）。
+  ApiPathBlockedMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref WafLogGroup
+      # LiteLLM 对每个端点同时注册带 /v1 前缀和不带前缀两种路由，两种都要列，
+      # 否则走无前缀路由的客户端被误杀时告警沉默。
+      FilterPattern: >-
+        { $.action = "BLOCK" && $.terminatingRuleId != "GeoAllowlist" &&
+        ($.httpRequest.uri = "/v1/messages" || $.httpRequest.uri = "/messages" ||
+        $.httpRequest.uri = "/v1/chat/completions" || $.httpRequest.uri = "/chat/completions" ||
+        $.httpRequest.uri = "/v1/completions" || $.httpRequest.uri = "/completions" ||
+        $.httpRequest.uri = "/v1/embeddings" || $.httpRequest.uri = "/embeddings" ||
+        $.httpRequest.uri = "/v1/responses" || $.httpRequest.uri = "/responses") }
+      MetricTransformations:
+        - MetricNamespace: !Sub "${ProjectName}/waf"
+          MetricName: ApiPathBlockedRequests
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # --- WAF 告警（复用 monitoring 栈的 SNS 主题）---
+  # 三个告警分工：量级洪水(小时) / key 滥用(绊线) / 业务路径误杀或凭证攻击(绊线)。
+  # 均不配 OKActions：扫描爆发或限速触发的「已恢复」不是事件，通知一次足够，
+  # 否则每次事件推 2 条消息，反而制造告警疲劳。
   WafBlockedAlarm:
     Type: AWS::CloudWatch::Alarm
     Condition: HasAlertTopic
     Properties:
-      AlarmName: !Sub "${ProjectName}-ops-waf-blocked-spike"
-      AlarmDescription: "WAF 拦截量激增，疑似攻击/滥用"
+      AlarmName: !Sub "${ProjectName}-ops-waf-blocked-flood"
+      AlarmDescription: "WAF 单小时拦截量达洪水量级（远超扫描器背景噪声），疑似 L7 洪泛"
       Namespace: AWS/WAFV2
       MetricName: BlockedRequests
       Dimensions:
@@ -334,13 +385,91 @@ Resources:
         - Name: Region
           Value: !Ref AWS::Region
       Statistic: Sum
-      Period: 300
+      Period: 3600
       EvaluationPeriods: 1
       Threshold: !Ref WafBlockedThreshold
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlertTopicArn]
-      OKActions: [!Ref AlertTopicArn]
+
+  # 限速规则被触发 = 某个 key 被滥用/盗用，或单 IP 洪泛。三条 rate 规则合并统计。
+  WafRateLimitAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlertTopic
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-waf-ratelimit-triggered"
+      AlarmDescription: "WAF 限速规则拦截了请求：单个 API key 被滥用/盗用，或单一源 IP 洪泛"
+      EvaluationPeriods: 1
+      Threshold: !Ref WafRateLimitBlockThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      Metrics:
+        - Id: auth
+          MetricStat:
+            Metric:
+              Namespace: AWS/WAFV2
+              MetricName: BlockedRequests
+              Dimensions:
+                - Name: WebACL
+                  Value: !Sub "${ProjectName}-ops-acl"
+                - Name: Rule
+                  Value: !Sub "${ProjectName}RateLimitKeyAuth"
+                - Name: Region
+                  Value: !Ref AWS::Region
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: apikey
+          MetricStat:
+            Metric:
+              Namespace: AWS/WAFV2
+              MetricName: BlockedRequests
+              Dimensions:
+                - Name: WebACL
+                  Value: !Sub "${ProjectName}-ops-acl"
+                - Name: Rule
+                  Value: !Sub "${ProjectName}RateLimitKeyApiKey"
+                - Name: Region
+                  Value: !Ref AWS::Region
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: ip
+          MetricStat:
+            Metric:
+              Namespace: AWS/WAFV2
+              MetricName: BlockedRequests
+              Dimensions:
+                - Name: WebACL
+                  Value: !Sub "${ProjectName}-ops-acl"
+                - Name: Rule
+                  Value: !Sub "${ProjectName}RateLimitIp"
+                - Name: Region
+                  Value: !Ref AWS::Region
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: total
+          Expression: "SUM([FILL(auth,0),FILL(apikey,0),FILL(ip,0)])"
+          Label: "限速拦截合计"
+          ReturnData: true
+
+  WafApiPathBlockedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlertTopic
+    Properties:
+      AlarmName: !Sub "${ProjectName}-ops-waf-api-path-blocked"
+      AlarmDescription: "真实推理端点的请求被 WAF 拦下：托管规则误杀客户端，或攻击者在打业务接口"
+      Namespace: !Sub "${ProjectName}/waf"
+      MetricName: ApiPathBlockedRequests
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref WafApiPathBlockThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
 
 Outputs:
   WebACLArn:
