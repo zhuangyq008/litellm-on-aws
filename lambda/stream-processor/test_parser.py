@@ -144,7 +144,7 @@ class TestParseMetadata:
             "user_api_key_user_id": "default_user_id",
             "headers": {
                 "x-forwarded-for": "44.219.177.250, 15.158.254.78",
-                "host": "d2cyolr4rt91j1.cloudfront.net",
+                "host": "gw.example.com",
             },
         })
         result = parse_metadata(metadata_str)

@@ -12,7 +12,7 @@
 在你的 shell 配置文件（`~/.bashrc` / `~/.zshrc`）中添加：
 
 ```bash
-export ANTHROPIC_BASE_URL="https://d2cyolr4rt91j1.cloudfront.net"
+export ANTHROPIC_BASE_URL="https://aigw.enginez.link"
 export ANTHROPIC_API_KEY="sk-你的LiteLLM-Key"
 ```
 
@@ -34,7 +34,7 @@ source ~/.bashrc  # 或 source ~/.zshrc
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://d2cyolr4rt91j1.cloudfront.net",
+    "ANTHROPIC_BASE_URL": "https://aigw.enginez.link",
     "ANTHROPIC_API_KEY": "sk-你的LiteLLM-Key"
   }
 }
@@ -53,7 +53,7 @@ source ~/.bashrc  # 或 source ~/.zshrc
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://d2cyolr4rt91j1.cloudfront.net",
+    "ANTHROPIC_BASE_URL": "https://aigw.enginez.link",
     "ANTHROPIC_API_KEY": "sk-你的LiteLLM-Key",
     "ANTHROPIC_MODEL": "bedrock-claude-opus",
     "CLAUDE_CODE_USE_BEDROCK": "0"
@@ -90,17 +90,21 @@ claude --model bedrock-claude-opus -p "say hi"
 检查 API Key 是否正确，必须以 `sk-` 开头。
 
 ### Q: 报错 "Connection refused" 或超时
-确认网络可以访问 `https://d2cyolr4rt91j1.cloudfront.net`，可用 curl 测试：
+确认网络可以访问 `https://aigw.enginez.link`，可用 curl 测试：
 ```bash
-curl https://d2cyolr4rt91j1.cloudfront.net/health/liveliness
+curl https://aigw.enginez.link/health/liveliness
 # 应返回: "I'm alive!"
 ```
 
 ### Q: 模型名称报错 "model not found"
-使用上方「可用模型」表格中的名称，不要使用 Anthropic 原始模型名（如 `claude-sonnet-4-20250514`）。
+优先使用上方「可用模型」表格中的名称。Anthropic 原生模型名（如
+`claude-sonnet-4-20250514`、`claude-haiku-4-5-20251001`）已通过
+`model_group_alias` 映射到对应的 Bedrock 路由，Claude Code 的 subagent 会
+直接发原生名，无需额外配置。若仍报此错，说明该原生名尚未加入映射表，联系
+管理员在 `config/litellm-config.yaml` 补一条。
 
 ### Q: 如何查看所有可用模型？
 ```bash
-curl -s https://d2cyolr4rt91j1.cloudfront.net/v1/models \
+curl -s https://aigw.enginez.link/v1/models \
   -H "x-api-key: sk-你的Key" | python3 -m json.tool
 ```

@@ -179,6 +179,6 @@ curl -sS -X POST https://aigw.enginez.link/v1/messages \
 
 ---
 
-**报告人**：庄颖勤（AWS SA, China Greenfield MFG）
+**报告人**：AWS SA Team
 **日期**：2026-06-04
 **测试环境**：Claude Code CLI on Linux aarch64，配置文件 `~/.claude/settings.litellm.json`

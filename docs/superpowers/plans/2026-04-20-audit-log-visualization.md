@@ -494,7 +494,7 @@ class TestParseMetadata:
             "user_api_key_user_id": "default_user_id",
             "headers": {
                 "x-forwarded-for": "44.219.177.250, 15.158.254.78",
-                "host": "d2cyolr4rt91j1.cloudfront.net",
+                "host": "aigw.enginez.link",
             },
         })
         result = parse_metadata(metadata_str)
@@ -2980,7 +2980,7 @@ aws cloudformation wait stack-create-complete --stack-name litellm-gw-audit-pipe
 
 ```bash
 # Make a test call to LiteLLM
-curl -s https://d2cyolr4rt91j1.cloudfront.net/v1/chat/completions \
+curl -s https://aigw.enginez.link/v1/chat/completions \
   -H "Authorization: Bearer $(aws secretsmanager get-secret-value --secret-id litellm/default/master-key --query SecretString --output text --region us-east-1)" \
   -H "Content-Type: application/json" \
   -d '{"model":"bedrock-claude-haiku","messages":[{"role":"user","content":"ping"}],"max_tokens":5}'

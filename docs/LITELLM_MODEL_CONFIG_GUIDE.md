@@ -752,7 +752,7 @@ aws ecs describe-services \
 
 # 5. 验证模型可用
 MASTER_KEY="your-master-key"
-curl -s -X POST "https://d2cyolr4rt91j1.cloudfront.net/v1/chat/completions" \
+curl -s -X POST "https://aigw.enginez.link/v1/chat/completions" \
   -H "Authorization: Bearer $MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "bedrock-claude-sonnet", "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 10}'

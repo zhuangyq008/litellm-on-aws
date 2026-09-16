@@ -94,6 +94,14 @@ Resources:
   # Port 80: CloudFront prefix list only (legacy CDN path)
   # Port 443: 0.0.0.0/0 because Global Accelerator preserves client IP,
   #          so the ALB sees the original client IP, not GA's edge IPs.
+  #
+  # SECURITY PREREQUISITE: a WAF WebACL MUST be associated with this ALB
+  # (see ops/cfn/02-waf.yaml). Port 443 is reachable from the entire internet,
+  # so WAF is the only compensating control — it provides the geo allowlist,
+  # per-API-key rate limiting and managed rule groups. Reaching the ALB DNS
+  # name directly also bypasses Global Accelerator, and with it the geo
+  # restriction, so the WAF geo rule must live on the ALB, not on GA.
+  # Do not deploy this stack internet-facing without the WAF stack.
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -263,11 +271,30 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # Scoped to the models declared in config/litellm-config.yaml.
+              # Invoking a cross-region inference profile ("us." prefix) requires
+              # BOTH the inference-profile ARN AND the foundation-model ARN in
+              # every region the profile can route to (us-east-1/2, us-west-2).
+              # NOTE: store_model_in_db is true, so a Bedrock model added at
+              # runtime via /model/new will fail with AccessDenied until its ARNs
+              # are added here.
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
                   - bedrock:InvokeModelWithResponseStream
-                Resource: "*"
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-opus-4-6-v1"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-4-6"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-6-v1"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-opus-4-6-v1"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-opus-4-6-v1"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
         - PolicyName: S3ConfigAccess
           PolicyDocument:
             Version: "2012-10-17"

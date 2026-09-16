@@ -1,17 +1,20 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "litellm-gw: ACM certificate for aigw.enginez.link (DNS-validated via Route53)"
+Description: "litellm-gw: ACM certificate for the gateway domain (DNS-validated via Route53)"
 
 Parameters:
   ProjectName:
     Type: String
     Default: litellm-gw
+  # No defaults: both must be supplied at deploy time so this template carries
+  # no account-specific resource identifiers.
   DomainName:
     Type: String
-    Default: aigw.enginez.link
+    Description: "Fully qualified domain name for the gateway (e.g. gw.example.com)"
+    AllowedPattern: "^[a-z0-9.-]+\\.[a-z]{2,}$"
   HostedZoneId:
     Type: String
-    Default: Z02143651SAMMZ86KXSGV
-    Description: Route53 hosted zone ID for enginez.link
+    Description: "Route53 public hosted zone ID that owns DomainName"
+    AllowedPattern: "^Z[A-Z0-9]+$"
 
 Resources:
   AlbCertificate:
